@@ -388,6 +388,14 @@ class ArticleFetcher:
         # 发布时间
         time_elem = soup.find('em', {'id': 'publish_time'}) or soup.find('span', {'class': 'publish_time'})
         info['publish_time'] = time_elem.get_text().strip() if time_elem else ""
+        # 遇到发布时间是页面渲染时 js set 进去的，所在直接从 html 里取
+        if not info['publish_time']:
+            m = re.search(
+                r"create_time:\s*JsDecode\('([^']+)'\)",
+                str(soup)
+            )
+            if m:
+                info['publish_time'] = m.group(1)
         
         # 内容区域
         content_elem = soup.find('div', {'id': 'js_content'})
