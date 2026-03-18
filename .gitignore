@@ -112,6 +112,8 @@ wespy.egg-info/
 dist/
 articles/
 test_output/
+.tmp/
+test_output_clean_v2/
 
 # Publishing and deployment
 publish.sh

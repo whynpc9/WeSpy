@@ -10,7 +10,7 @@ import sys
 import re
 import requests
 import urllib.parse
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import time
 import json
 import argparse
@@ -163,6 +163,29 @@ class WeChatAlbumFetcher:
         return articles
 
 class ArticleFetcher:
+    PRESERVED_CONTENT_TAGS = {'img', 'picture', 'pre', 'code', 'table', 'blockquote', 'ul', 'ol', 'video', 'iframe'}
+    NON_CONTENT_KEYWORDS = [
+        'share', 'related', 'recommended', 'subscribe', 'follow us', 'follow me',
+        '二维码', '扫码', '进群', '分享', '点赞', '在看', '关注我们', '相关推荐',
+        '相关阅读', '推荐阅读', '版权声明', '免责声明', '广告', '赞赏'
+    ]
+    WECHAT_LEAD_PATTERNS = [
+        r'点击上方.*关注',
+        r'关注我们',
+        r'长按.*识别',
+    ]
+    WECHAT_TRAILING_PATTERNS = [
+        r'点击下方.*阅读原文',
+        r'^来源[:：]',
+        r'^点分享$',
+        r'^点收藏$',
+        r'^点点赞$',
+        r'^点在看$',
+        r'扫码.*进群',
+        r'AI进群',
+        r'仅限受邀加入',
+    ]
+
     def __init__(self):
         self.session = requests.Session()
         # 设置请求头，模拟浏览器
@@ -400,8 +423,9 @@ class ArticleFetcher:
         # 内容区域
         content_elem = soup.find('div', {'id': 'js_content'})
         if content_elem:
-            info['content_html'] = str(content_elem)
-            info['content_text'] = content_elem.get_text().strip()
+            cleaned_content = self._clean_content_element(content_elem, source='wechat')
+            info['content_html'] = str(cleaned_content)
+            info['content_text'] = cleaned_content.get_text('\n', strip=True)
         else:
             info['content_html'] = ""
             info['content_text'] = ""
@@ -476,14 +500,238 @@ class ArticleFetcher:
             content_elem = soup.find('body')
         
         if content_elem:
-            info['content_html'] = str(content_elem)
-            info['content_text'] = content_elem.get_text().strip()
+            cleaned_content = self._clean_content_element(content_elem, source='general')
+            info['content_html'] = str(cleaned_content)
+            info['content_text'] = cleaned_content.get_text('\n', strip=True)
         else:
             info['content_html'] = ""
             info['content_text'] = ""
-        
+
         return info
-    
+
+    def _clean_content_element(self, content_elem, source='general'):
+        """清洗提取出的正文内容，尽量保留正文、删除噪音块。"""
+        cleaned = BeautifulSoup(str(content_elem), 'html.parser')
+        root = cleaned.find()
+        if not root:
+            return cleaned
+
+        self._remove_comments_and_hidden(root)
+
+        if source == 'wechat':
+            self._trim_wechat_lead(root)
+            self._trim_wechat_trailing_content(root)
+
+        self._prune_low_value_blocks(root, source)
+        self._remove_empty_elements(root)
+        return root
+
+    def _remove_comments_and_hidden(self, root):
+        """移除注释、脚本、样式和明显隐藏的节点。"""
+        for comment in root.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
+        for tag in root.find_all(['script', 'style', 'noscript']):
+            tag.decompose()
+
+        for tag in list(root.find_all(True)):
+            if getattr(tag, 'name', None) is None or getattr(tag, 'attrs', None) is None:
+                continue
+            style = (tag.get('style') or '').lower()
+            if tag.has_attr('hidden') or tag.get('aria-hidden') == 'true':
+                tag.decompose()
+                continue
+            if re.search(r'display\s*:\s*none', style) or re.search(r'visibility\s*:\s*hidden', style):
+                tag.decompose()
+
+    def _trim_wechat_lead(self, root):
+        """移除公众号正文开头常见的引导关注块。"""
+        blocks = self._get_text_blocks(root)
+        first_substantive = None
+
+        for block in blocks:
+            text = self._normalize_text(block.get_text(' ', strip=True))
+            if self._is_substantive_text(text):
+                first_substantive = block
+                break
+
+        if not first_substantive:
+            return
+
+        for block in blocks:
+            if block == first_substantive:
+                break
+            text = self._normalize_text(block.get_text(' ', strip=True))
+            if self._matches_patterns(text, self.WECHAT_LEAD_PATTERNS):
+                self._remove_before_node(first_substantive, root)
+                return
+
+    def _trim_wechat_trailing_content(self, root):
+        """命中公众号尾部标记后，截断后续所有内容。"""
+        full_text = self._normalize_text(root.get_text('\n', strip=True))
+        if not full_text:
+            return
+
+        for block in self._get_text_blocks(root):
+            text = self._normalize_text(block.get_text(' ', strip=True))
+            if not text:
+                continue
+
+            marker = text[:40]
+            position = full_text.find(marker) if marker else -1
+            ratio = (position / len(full_text)) if position >= 0 and full_text else 0
+
+            if ratio < 0.45:
+                continue
+
+            if self._matches_patterns(text, self.WECHAT_TRAILING_PATTERNS):
+                self._remove_after_node(block, root, remove_self=True)
+                return
+
+    def _prune_low_value_blocks(self, root, source='general'):
+        """删除低价值的结构块，借鉴通用正文清洗的打分思路。"""
+        candidates = list(root.find_all(['section', 'div', 'aside']))
+
+        for tag in candidates:
+            if getattr(tag, 'name', None) is None or getattr(tag, 'attrs', None) is None:
+                continue
+            if tag == root:
+                continue
+
+            text = self._normalize_text(tag.get_text(' ', strip=True))
+            text_weight = self._text_weight(text)
+
+            if text_weight == 0 and not tag.find(list(self.PRESERVED_CONTENT_TAGS)):
+                tag.decompose()
+                continue
+
+            if self._looks_like_content_container(tag, text_weight):
+                continue
+
+            score = 0
+            keyword_hits = sum(1 for keyword in self.NON_CONTENT_KEYWORDS if keyword in text.lower())
+            link_density = self._link_density(tag, text)
+            image_count = len(tag.find_all('img'))
+            paragraph_count = len(tag.find_all('p'))
+
+            if text_weight < 8:
+                score -= 1
+            if keyword_hits:
+                score -= keyword_hits
+            if link_density > 0.45 and len(tag.find_all('a')) > 1:
+                score -= 2
+            if image_count >= 2 and text_weight < 12:
+                score -= 2
+            if paragraph_count == 0 and image_count and text_weight < 16:
+                score -= 1
+            if source == 'wechat' and any(keyword in text for keyword in ['扫码', '进群', '点分享', '点收藏', '点点赞', '点在看']):
+                score -= 3
+
+            if score <= -2:
+                tag.decompose()
+
+    def _remove_empty_elements(self, root):
+        """清理空包装节点，保留图片、代码、表格等正文元素。"""
+        for tag in list(root.find_all(True)):
+            if getattr(tag, 'name', None) is None or getattr(tag, 'attrs', None) is None:
+                continue
+            if tag == root:
+                continue
+            if tag.name in self.PRESERVED_CONTENT_TAGS or tag.name == 'br':
+                continue
+            if tag.find(list(self.PRESERVED_CONTENT_TAGS)):
+                continue
+            if not tag.get_text(strip=True):
+                tag.decompose()
+
+    def _get_text_blocks(self, root):
+        """获取正文中的文本块，用于定位开头和结尾噪音。"""
+        blocks = []
+        for tag in root.find_all(['p', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4']):
+            text = self._normalize_text(tag.get_text(' ', strip=True))
+            if text:
+                blocks.append(tag)
+        return blocks
+
+    def _is_substantive_text(self, text):
+        """判断是否是较像正文的文本块。"""
+        if self._text_weight(text) >= 24:
+            return True
+        return self._text_weight(text) >= 16 and bool(re.search(r'[。！？；：.!?]', text))
+
+    def _looks_like_content_container(self, tag, text_weight):
+        """保留明显像正文的结构块。"""
+        if text_weight >= 120:
+            return True
+        if len(tag.find_all('p')) >= 2 and text_weight >= 24:
+            return True
+        if tag.find(['pre', 'code', 'table', 'blockquote']) and text_weight >= 12:
+            return True
+        if tag.find(['img', 'picture']) and text_weight >= 24:
+            return True
+        return False
+
+    def _link_density(self, tag, text):
+        """计算链接文本密度，辅助识别导航和营销块。"""
+        total_length = len(re.sub(r'\s+', '', text)) or 1
+        link_text = ''.join(link.get_text(' ', strip=True) for link in tag.find_all('a'))
+        link_length = len(re.sub(r'\s+', '', link_text))
+        return link_length / total_length
+
+    def _text_weight(self, text):
+        """兼容中英文的轻量文本权重估算。"""
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+        latin_words = len(re.findall(r'\b[a-zA-Z0-9_]+\b', text))
+        return latin_words + chinese_chars // 2
+
+    def _normalize_text(self, text):
+        """压缩空白，便于匹配内容模式。"""
+        return re.sub(r'\s+', ' ', text or '').strip()
+
+    def _matches_patterns(self, text, patterns):
+        """检查文本是否命中任一清洗规则。"""
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+    def _remove_after_node(self, node, root, remove_self=False):
+        """删除当前节点之后的所有内容，跨层级向上截断。"""
+        current = node
+        first_step = True
+
+        while current and current != root:
+            parent = current.parent if getattr(current, 'parent', None) else None
+            if first_step and remove_self:
+                next_sibling = current.next_sibling
+                current.decompose()
+            else:
+                next_sibling = current.next_sibling
+
+            while next_sibling is not None:
+                sibling = next_sibling
+                next_sibling = sibling.next_sibling
+                if hasattr(sibling, 'decompose'):
+                    sibling.decompose()
+                else:
+                    sibling.extract()
+
+            first_step = False
+            current = parent
+
+    def _remove_before_node(self, node, root):
+        """删除当前节点之前的所有内容，跨层级向上截断。"""
+        current = node
+
+        while current and current != root:
+            prev_sibling = current.previous_sibling
+            while prev_sibling is not None:
+                sibling = prev_sibling
+                prev_sibling = sibling.previous_sibling
+                if hasattr(sibling, 'decompose'):
+                    sibling.decompose()
+                else:
+                    sibling.extract()
+
+            current = current.parent if getattr(current, 'parent', None) else None
+
     def _save_article(self, article_info, output_dir, save_html=False, save_json=False, save_markdown=True):
         """保存文章到文件"""
         # 创建输出目录
