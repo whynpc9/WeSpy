@@ -15,6 +15,7 @@ import time
 import json
 import argparse
 from wespy.juejin import JuejinFetcher
+from wespy.ocr import MinerUOCRClient
 
 class WeChatAlbumFetcher:
     """微信公众号专辑文章列表获取器"""
@@ -185,8 +186,9 @@ class ArticleFetcher:
         r'AI进群',
         r'仅限受邀加入',
     ]
+    MINERU_IMAGE_MIN_WIDTH = 200
 
-    def __init__(self):
+    def __init__(self, enable_image_ocr=False, mineru_url=None, mineru_backend="hybrid-auto-engine", mineru_lang_list=None, verbose=False):
         self.session = requests.Session()
         # 设置请求头，模拟浏览器
         self.session.headers.update({
@@ -201,6 +203,20 @@ class ArticleFetcher:
         self.juejin_fetcher = JuejinFetcher()
         # 初始化微信专辑获取器
         self.album_fetcher = WeChatAlbumFetcher()
+        self.enable_image_ocr = enable_image_ocr
+        self.mineru_url = mineru_url or os.environ.get('WESPY_MINERU_URL') or 'http://172.16.3.132:8523'
+        self.mineru_backend = mineru_backend
+        self.mineru_lang_list = mineru_lang_list or ['ch']
+        self.verbose = verbose
+        self.image_ocr_client = (
+            MinerUOCRClient(
+                server_url=self.mineru_url,
+                backend=self.mineru_backend,
+                lang_list=self.mineru_lang_list,
+            )
+            if self.enable_image_ocr else None
+        )
+        self._image_ocr_cache = {}
 
     def fetch_album_articles(self, album_url, output_dir="articles", max_articles=None, save_html=False, save_json=False, save_markdown=True):
         """
@@ -838,9 +854,7 @@ class ArticleFetcher:
                 src = child.get('data-src') or child.get('src', '')
                 alt = child.get('alt', '')
                 if src:
-                    # 使用代理服务处理图片防盗链
-                    proxy_src = self._get_proxy_image_url(src)
-                    markdown += f'\n![{alt}]({proxy_src})\n'
+                    markdown += self._render_image_markdown(child, src, alt)
             elif child.name == 'a':
                 href = child.get('href', '')
                 text = self._html_to_markdown_recursive(child).strip()
@@ -872,6 +886,102 @@ class ArticleFetcher:
                 markdown += content
         
         return markdown
+
+    def _render_image_markdown(self, image_element, src, alt):
+        """渲染图片 Markdown，并按需附加 OCR 结果。"""
+        proxy_src = self._get_proxy_image_url(src)
+        markdown = f'\n![{alt}]({proxy_src})\n'
+        ocr_markdown = self._extract_image_ocr_markdown(image_element, src)
+        if ocr_markdown:
+            markdown += f'\n**图片OCR**\n\n{self._wrap_ocr_block(ocr_markdown)}\n'
+        return markdown
+
+    def _wrap_ocr_block(self, ocr_markdown):
+        """将 OCR 结果包进引用块，并转义结构标记，避免破坏正文层级。"""
+        content = (ocr_markdown or "").strip()
+        if not content:
+            return ""
+
+        quoted_lines = []
+        for line in content.splitlines():
+            escaped = re.sub(r'^([#>*`\-\+])', r'\\\1', line)
+            escaped = re.sub(r'^(\d+\.)', r'\\\1', escaped)
+            quoted_lines.append(f"> {escaped}" if escaped else ">")
+
+        return "\n".join(quoted_lines)
+
+    def _extract_image_ocr_markdown(self, image_element, src):
+        """对符合条件的图片调用 MinerU OCR，并返回清洗后的 Markdown。"""
+        if not self.enable_image_ocr or not self.image_ocr_client:
+            return ""
+
+        cache_key = src
+        if cache_key in self._image_ocr_cache:
+            return self._image_ocr_cache[cache_key]
+
+        if not self._should_ocr_image(image_element, src):
+            self._image_ocr_cache[cache_key] = ""
+            return ""
+
+        try:
+            response = self.session.get(src, timeout=60)
+            response.raise_for_status()
+            content_type = response.headers.get('Content-Type', 'application/octet-stream')
+            filename = self._guess_image_filename(src, content_type)
+            ocr_markdown = self.image_ocr_client.extract_markdown(
+                image_bytes=response.content,
+                filename=filename,
+                content_type=content_type,
+            ).strip()
+            self._image_ocr_cache[cache_key] = ocr_markdown
+            if self.verbose and ocr_markdown:
+                print(f"图片 OCR 成功: {src}")
+            return ocr_markdown
+        except Exception as e:
+            if self.verbose:
+                print(f"图片 OCR 失败: {src} ({e})")
+            self._image_ocr_cache[cache_key] = ""
+            return ""
+
+    def _should_ocr_image(self, image_element, src):
+        """只对可能包含正文信息的大图做 OCR。"""
+        if not src or not src.startswith('http'):
+            return False
+
+        lower_src = src.lower()
+        if 'gif' in lower_src or 'wx_fmt=gif' in lower_src:
+            return False
+
+        width_candidates = [
+            image_element.get('data-w'),
+            image_element.get('width'),
+            image_element.get('data-backw'),
+        ]
+        for width in width_candidates:
+            if not width:
+                continue
+            try:
+                if int(float(width)) < self.MINERU_IMAGE_MIN_WIDTH:
+                    return False
+            except Exception:
+                continue
+
+        return True
+
+    def _guess_image_filename(self, src, content_type):
+        """推断上传给 MinerU 的图片文件名。"""
+        parsed = urllib.parse.urlparse(src)
+        filename = os.path.basename(parsed.path) or 'image'
+        if '.' not in filename:
+            if 'png' in content_type:
+                filename += '.png'
+            elif 'jpeg' in content_type or 'jpg' in content_type:
+                filename += '.jpg'
+            elif 'webp' in content_type:
+                filename += '.webp'
+            else:
+                filename += '.bin'
+        return filename
     
     def _convert_list_to_markdown(self, list_element):
         """转换列表为Markdown"""
@@ -1016,6 +1126,8 @@ def main():
     parser.add_argument('--all', action='store_true', help='保存所有格式文件 (HTML, JSON, Markdown)')
     parser.add_argument('--max-articles', type=int, help='微信专辑最大下载文章数量 (默认: 10)')
     parser.add_argument('--album-only', action='store_true', help='仅获取专辑文章列表，不下载内容')
+    parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
+    parser.add_argument('--mineru-url', help='MinerU 服务地址 (默认读取 WESPY_MINERU_URL 或使用本地开发地址)')
     
     args = parser.parse_args()
     
@@ -1053,6 +1165,8 @@ def main():
         # 交互模式默认值
         max_articles = 10
         album_only = False
+        image_ocr = False
+        mineru_url = None
 
     else:
         url = args.url
@@ -1070,6 +1184,8 @@ def main():
 
         max_articles = args.max_articles or 10
         album_only = args.album_only
+        image_ocr = args.image_ocr
+        mineru_url = args.mineru_url
 
     if args.verbose:
         print(f"URL: {url}")
@@ -1079,8 +1195,15 @@ def main():
             print(f"最大文章数量: {max_articles}")
         if hasattr(args, 'album_only'):
             print(f"仅获取列表: {album_only}")
+        print(f"图片 OCR: {image_ocr}")
+        if mineru_url:
+            print(f"MinerU URL: {mineru_url}")
 
-    fetcher = ArticleFetcher()
+    fetcher = ArticleFetcher(
+        enable_image_ocr=image_ocr,
+        mineru_url=mineru_url,
+        verbose=args.verbose,
+    )
 
     # 检查是否为专辑URL
     if fetcher.album_fetcher.is_album_url(url):

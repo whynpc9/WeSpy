@@ -17,6 +17,7 @@ WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Pyth
 - 📱 **wx公众号支持**：专门优化wx公众号文章的提取，支持长短链接自动转换
 - 🎵 **专辑批量下载**：支持微信公众号专辑文章批量获取和下载
 - 🖼️ **图片防盗链处理**：自动处理图片防盗链问题，确保图片正常显示
+- 🔎 **图片 OCR 合并**：可选接入 MinerU，对公众号图片提取 Markdown，并以引用块形式合并进正文
 - 📝 **灵活输出配置**：默认只输出 Markdown，可选择 HTML 和 JSON 格式
 - 🌐 **通用网页支持**：支持大多数网站的文章提取
 - 🎯 **命令行友好**：提供简单易用的命令行界面
@@ -57,6 +58,9 @@ wespy "https://example.com/article" --json
 
 # 输出所有格式（HTML + JSON + Markdown）
 wespy "https://example.com/article" --all
+
+# 对公众号图片启用 OCR，并把结果合并进 Markdown
+wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mineru-url http://172.16.3.132:8523
 
 # 显示详细信息
 wespy "https://example.com/article" -v
@@ -99,6 +103,12 @@ from wespy.main import WeChatAlbumFetcher
 
 # 创建文章获取器实例
 fetcher = ArticleFetcher()
+
+# 如果只关注 Markdown，并希望把图片 OCR 合并进正文
+ocr_fetcher = ArticleFetcher(
+    enable_image_ocr=True,
+    mineru_url="http://172.16.3.132:8523",
+)
 
 # 获取单篇文章（默认只输出 Markdown）
 article_info = fetcher.fetch_article(
@@ -216,7 +226,14 @@ optional arguments:
   --max-articles MAX_ARTICLES
                         微信专辑最大下载文章数量 (默认: 10)
   --album-only          仅获取专辑文章列表，不下载内容
+  --image-ocr           对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown
+  --mineru-url MINERU_URL
+                        MinerU 服务地址
 ```
+
+也可以通过环境变量 `WESPY_MINERU_URL` 提供 MinerU 地址，这样命令行里只保留 `--image-ocr` 即可。
+
+启用图片 OCR 后，提取出的文本会追加在对应图片下方，并用引用块包裹，避免 OCR 里的标题或列表打乱原始正文的 Markdown 结构。
 
 ### 输出格式选项说明
 - **默认行为**：只生成 Markdown 文件
