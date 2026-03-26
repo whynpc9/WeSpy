@@ -4,7 +4,7 @@
 [![Python Support](https://img.shields.io/pypi/pyversions/wespy.svg)](https://pypi.org/project/wespy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Python 工具，支持图片防盗链处理、专辑批量下载、图片 OCR，以及基于 agent-browser 的 PDF 导出。
+WeSpy 是一个用于获取 wx 公众号文章并转换为 Markdown 格式的 Python 工具，支持图片防盗链处理、专辑批量下载、图片 OCR、基于 agent-browser 的 PDF 导出，以及基于 SQLite 的公众号订阅与批量 Markdown 下载。
 
 ## Skill
 
@@ -16,6 +16,7 @@ WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Pyth
 - 🚀 **智能文章提取**：自动识别文章标题、作者、发布时间和正文内容
 - 📱 **wx公众号支持**：专门优化wx公众号文章的提取，支持长短链接自动转换
 - 🎵 **专辑批量下载**：支持微信公众号专辑文章批量获取和下载
+- 🗂️ **公众号订阅同步**：支持把公众号加入本地订阅清单，分页同步文章列表并批量导出 Markdown
 - 🖼️ **图片防盗链处理**：自动处理图片防盗链问题，确保图片正常显示
 - 🔎 **图片 OCR 合并**：可选接入 MinerU，对公众号图片提取 Markdown，并以引用块形式合并进正文
 - 📄 **浏览器 PDF 导出**：可选调用 agent-browser，把原网页按浏览器渲染效果导出为 PDF
@@ -38,6 +39,79 @@ pip install wespy
 git clone https://github.com/tianchang/wespy.git
 cd wespy
 pip install -e .
+```
+
+## 依赖矩阵
+
+| 能力 | 是否默认可用 | 额外依赖/环境 | 缺失时的行为 |
+| --- | --- | --- | --- |
+| 单篇文章转 Markdown | 是 | 无 | 正常可用 |
+| 微信专辑批量下载 | 是 | 无 | 正常可用 |
+| 公众号订阅 / 同步 | 是 | 有效的公众号后台登录态 | 不能同步，但普通 URL 抓取不受影响 |
+| 扫码登录公众号后台 | 是 | 能访问 `mp.weixin.qq.com` | 可改用 `auth set --token --cookie` 手动配置 |
+| 图片 OCR | 否 | 可访问的 MinerU 服务 | 不启用 `--image-ocr` 时完全不受影响 |
+| PDF 导出 | 否 | `agent-browser` + Chrome | 不启用 `--pdf` 时完全不受影响 |
+
+## 最小可用功能集合
+
+只安装 Python 依赖时，WeSpy 仍然应该可用，而且默认只依赖这部分能力：
+
+- 单篇文章抓取并导出 Markdown
+- 微信专辑文章列表获取与批量 Markdown 下载
+- 通用网页文章抓取
+- 本地 SQLite 存储订阅数据
+
+也就是说：
+
+- 没有 `agent-browser` 时，不要使用 `--pdf`
+- 没有 MinerU 服务时，不要使用 `--image-ocr`
+- 没有公众号后台登录态时，不要使用 `subscribe` / `sync` / `download-account`
+
+## 可选依赖配置
+
+基础能力只需要安装 Python 依赖：
+
+```bash
+pip install -e .
+```
+
+按需启用增强能力时，再补充下面的配置。
+
+### PDF 导出配置
+
+如果需要 `--pdf`，请先安装并初始化 [agent-browser](https://github.com/vercel-labs/agent-browser)：
+
+```bash
+npm install -g agent-browser
+agent-browser install
+```
+
+如果本机使用的不是默认命令名，也可以通过环境变量 `WESPY_AGENT_BROWSER_CMD` 指定：
+
+```bash
+export WESPY_AGENT_BROWSER_CMD="npx agent-browser"
+```
+
+### OCR 配置
+
+如果需要 `--image-ocr`，请先准备可访问的 MinerU 服务，然后通过参数或环境变量提供地址：
+
+```bash
+export WESPY_MINERU_URL="http://172.16.3.132:8523"
+```
+
+### 公众号订阅配置
+
+如果需要 `subscribe` / `sync` / `download-account`，请先准备公众号后台登录态。推荐直接扫码登录写入 SQLite：
+
+```bash
+wespy auth login
+```
+
+如果已经有 `token + cookie`，也可以手动写入：
+
+```bash
+wespy auth set --token 123456789 --cookie "pass_ticket=...; wap_sid2=...; ..."
 ```
 
 ## 快速开始
@@ -82,6 +156,53 @@ wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-art
 
 # 下载专辑文章并保存所有格式
 wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 5 --all
+```
+
+### 公众号订阅与批量下载
+
+订阅功能使用 SQLite 保存本地数据，默认数据库路径为 `~/.wespy/wespy.db`。  
+由于微信文章列表接口依赖公众号后台登录态，这一版支持扫码登录自动写入认证信息，也支持手动提供 `token + cookie`。
+
+```bash
+# 扫码登录公众号后台，二维码默认保存到 ~/.wespy/login-qrcode.png
+wespy auth login
+
+# 指定二维码输出路径和超时时间
+wespy auth login --qr-output /tmp/wespy-login.png --timeout 180
+
+# 保存公众号后台 token 和 cookie
+wespy auth set --token 123456789 --cookie "pass_ticket=...; wap_sid2=...; ..."
+
+# 查看当前认证状态
+wespy auth show
+
+# 订阅公众号（支持公众号名关键词或公众号文章链接）
+wespy subscribe "人民日报"
+wespy subscribe "https://mp.weixin.qq.com/s/xxxxx"
+
+# 查看已订阅公众号
+wespy subscriptions
+
+# 同步指定公众号的文章列表
+wespy sync "人民日报"
+
+# 同步全部已订阅公众号
+wespy sync --all
+
+# 下载该公众号尚未下载的文章，默认输出 Markdown
+wespy download-account "人民日报"
+
+# 下载该公众号尚未下载的文章，并同时导出 PDF
+wespy download-account "人民日报" --pdf
+
+# 同步后立即下载新增文章
+wespy sync-and-download "人民日报"
+```
+
+如果希望把数据库放到别处，可以显式指定：
+
+```bash
+wespy --db-path /path/to/wespy.db subscriptions
 ```
 
 ### 交互式使用
@@ -202,20 +323,27 @@ articles/
 }
 ```
 
-## PDF 导出依赖
+## OCR 依赖
 
-如果需要 `--pdf` 能力，请先安装并初始化 [agent-browser](https://github.com/vercel-labs/agent-browser)：
-
-```bash
-npm install -g agent-browser
-agent-browser install
-```
-
-如果本机使用的不是默认命令名，也可以通过环境变量 `WESPY_AGENT_BROWSER_CMD` 指定，例如：
+如果需要 `--image-ocr`，请先准备可访问的 MinerU 服务，然后通过参数或环境变量提供地址：
 
 ```bash
-export WESPY_AGENT_BROWSER_CMD="npx agent-browser"
+wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mineru-url http://172.16.3.132:8523
+
+export WESPY_MINERU_URL="http://172.16.3.132:8523"
+wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr
 ```
+
+## 公众号订阅说明
+
+- 存储介质：SQLite，默认路径 `~/.wespy/wespy.db`
+- 当前范围：只同步公众号文章列表和正文内容，不处理评论、阅读量、点赞量、留言回复
+- 默认导出格式：Markdown
+- 可选导出格式：HTML、JSON、PDF
+- 不包含：评论、阅读量、点赞量、留言回复
+- 认证方式：推荐使用 `wespy auth login` 扫码登录，自动写入 SQLite
+- 手动认证：也可提供公众号后台页面中的 `token` 和请求头里的完整 `Cookie`
+- 批量下载默认只处理未下载文章，避免重复导出
 
 ## 支持的网站
 
@@ -260,6 +388,27 @@ optional arguments:
 也可以通过环境变量 `WESPY_MINERU_URL` 提供 MinerU 地址，这样命令行里只保留 `--image-ocr` 即可。
 
 启用图片 OCR 后，提取出的文本会追加在对应图片下方，并用引用块包裹，避免 OCR 里的标题或列表打乱原始正文的 Markdown 结构。
+
+### 订阅命令
+
+```
+wespy auth set --token TOKEN --cookie "..."
+wespy auth login [--qr-output PATH] [--timeout SECONDS]
+wespy auth show
+wespy auth clear
+
+wespy subscribe <keyword-or-article-url>
+wespy subscriptions
+
+wespy sync <account>
+wespy sync --all
+
+wespy download-account <account> [-o OUTPUT] [--limit N] [--all-articles]
+wespy download-account --all-accounts
+
+wespy sync-and-download <account> [-o OUTPUT] [--limit N]
+wespy sync-and-download --all-accounts
+```
 
 ### 输出格式选项说明
 - **默认行为**：只生成 Markdown 文件

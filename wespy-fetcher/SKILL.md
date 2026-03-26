@@ -1,6 +1,6 @@
 ---
 name: wespy-fetcher
-description: 获取并转换微信公众号/网页文章为 Markdown 的封装 Skill，完整支持 WeSpy 的单篇抓取、微信专辑批量下载、专辑列表获取、HTML/JSON/PDF/Markdown 多格式输出，以及调用 MinerU 对公众号图片做 OCR 并合并进 Markdown。Use when user asks to 抓取微信公众号文章、公众号专辑批量下载、URL 转 Markdown、保存微信文章、公众号图片 OCR、网页导出 PDF、mp.weixin.qq.com to markdown.
+description: 获取并转换微信公众号/网页文章为 Markdown 的封装 Skill，完整支持 WeSpy 的单篇抓取、微信专辑批量下载、HTML/JSON/PDF/Markdown 多格式输出、公众号订阅同步与批量正文下载，以及调用 MinerU 对公众号图片做 OCR 并合并进 Markdown。Use when user asks to 抓取微信公众号文章、公众号专辑批量下载、URL 转 Markdown、保存微信文章、公众号订阅同步、公众号批量下载、公众号图片 OCR、网页导出 PDF、mp.weixin.qq.com to markdown.
 ---
 
 # WeSpy Fetcher
@@ -12,9 +12,25 @@ description: 获取并转换微信公众号/网页文章为 Markdown 的封装 S
 - 单篇文章抓取（微信公众号 / 通用网页 / 掘金）
 - 微信专辑文章列表获取（`--album-only`）
 - 微信专辑批量下载（`--max-articles`）
+- 公众号订阅、同步与批量下载（`auth` / `subscribe` / `sync` / `download-account` / `sync-and-download`）
 - 多格式输出（Markdown 默认，支持 HTML / JSON / PDF / 全部）
 - 图片 OCR 合并（`--image-ocr` / `--mineru-url`）
 - 交互模式（不传 URL 时）
+
+## 最小可用能力
+
+只安装 Python 依赖时，Skill 仍可直接使用这些能力：
+
+- 单篇文章抓取并输出 Markdown
+- 微信专辑文章列表获取与批量 Markdown 下载
+- 通用网页文章抓取
+- 公众号订阅数据的本地 SQLite 存储
+
+可选能力按需启用：
+
+- `--pdf` 依赖 `agent-browser`
+- `--image-ocr` 依赖 MinerU 服务
+- `subscribe` / `sync` / `download-account` 依赖公众号后台登录态
 
 ## 依赖来源
 
@@ -53,6 +69,22 @@ python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/mp/appmsgalbum?..." --alb
 
 # 专辑批量下载
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/mp/appmsgalbum?..." --max-articles 20 --all
+
+# 扫码登录公众号后台并写入 SQLite
+python3 scripts/wespy_cli.py auth login
+
+# 保存公众号后台 token / cookie 到 SQLite
+python3 scripts/wespy_cli.py auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."
+
+# 订阅公众号并同步文章列表
+python3 scripts/wespy_cli.py subscribe "人民日报"
+python3 scripts/wespy_cli.py sync "人民日报"
+
+# 批量下载该公众号尚未下载的文章
+python3 scripts/wespy_cli.py download-account "人民日报"
+
+# 批量下载该公众号文章，并同时导出 PDF
+python3 scripts/wespy_cli.py download-account "人民日报" --pdf
 ```
 
 ## 参数
@@ -70,6 +102,13 @@ python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/mp/appmsgalbum?..." --max
 - `--pdf`
 - `--image-ocr`
 - `--mineru-url`
+- `--db-path`
+- `auth`
+- `subscribe`
+- `subscriptions`
+- `sync`
+- `download-account`
+- `sync-and-download`
 
 ## 实现说明
 
@@ -77,6 +116,51 @@ python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/mp/appmsgalbum?..." --max
 - 若 Skill 嵌在 WeSpy 仓库内，自动使用当前仓库源码
 - 若本地不存在源码，则自动 clone `https://github.com/whynpc9/WeSpy.git`
 - 通过导入 `wespy.main.main` 直接调用 CLI，保持行为一致
+- 订阅数据使用 SQLite，默认路径 `~/.wespy/wespy.db`
+- 公众号订阅功能支持 `auth login` 扫码登录，也支持手动提供公众号后台的 `token + cookie`
 - `--pdf` 依赖本机可用的 `agent-browser`，必要时可通过 `WESPY_AGENT_BROWSER_CMD` 覆盖命令
 - OCR 依赖本地可访问的 MinerU 服务，也可通过环境变量 `WESPY_MINERU_URL` 提供服务地址
 - 图片 OCR 结果会作为引用块追加到对应图片下方，避免打乱正文标题层级
+
+## 可选依赖配置
+
+基础能力只需要：
+
+```bash
+pip3 install -r scripts/requirements.txt
+```
+
+按需启用增强能力时，再补充下面的环境：
+
+### PDF 导出
+
+```bash
+npm install -g agent-browser
+agent-browser install
+```
+
+如果命令名不在默认 `PATH`：
+
+```bash
+export WESPY_AGENT_BROWSER_CMD="npx agent-browser"
+```
+
+### OCR
+
+```bash
+export WESPY_MINERU_URL="http://172.16.3.132:8523"
+```
+
+### 公众号订阅
+
+推荐使用扫码登录写入 SQLite：
+
+```bash
+python3 scripts/wespy_cli.py auth login
+```
+
+也可以手动写入后台 `token + cookie`：
+
+```bash
+python3 scripts/wespy_cli.py auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."
+```

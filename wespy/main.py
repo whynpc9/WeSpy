@@ -17,6 +17,7 @@ import argparse
 from wespy.juejin import JuejinFetcher
 from wespy.ocr import MinerUOCRClient
 from wespy.pdf_export import AgentBrowserPDFExporter
+from wespy.subscriptions import SubscriptionService, SubscriptionStore
 
 class WeChatAlbumFetcher:
     """微信公众号专辑文章列表获取器"""
@@ -186,6 +187,15 @@ class ArticleFetcher:
         r'扫码.*进群',
         r'AI进群',
         r'仅限受邀加入',
+    ]
+    WECHAT_UNAVAILABLE_PATTERNS = [
+        r'该内容已被发布者删除',
+        r'此内容因违规无法查看',
+        r'此内容因投诉无法查看',
+        r'内容已被删除',
+        r'轻触阅读原文',
+        r'微信扫一扫可打开此内容',
+        r'使用完整服务',
     ]
     MINERU_IMAGE_MIN_WIDTH = 200
 
@@ -386,6 +396,18 @@ class ArticleFetcher:
         article_info = self._extract_wechat_info(soup)
         article_info['url'] = url
         article_info['html_content'] = response.text
+
+        unavailable_reason = self._detect_wechat_unavailable_reason(soup, article_info)
+        if unavailable_reason:
+            print(f"跳过不可用微信文章: {unavailable_reason}")
+            return {
+                'url': url,
+                'title': article_info.get('title') or "未知标题",
+                'author': article_info.get('author') or "未知作者",
+                'publish_time': article_info.get('publish_time') or "",
+                'fetch_status': 'unavailable',
+                'unavailable_reason': unavailable_reason,
+            }
         
         # 保存文章
         self._save_article(article_info, output_dir, save_html, save_json, save_markdown, save_pdf)
@@ -452,6 +474,29 @@ class ArticleFetcher:
             info['content_text'] = ""
         
         return info
+
+    def _detect_wechat_unavailable_reason(self, soup, article_info):
+        """识别微信文章失效页，避免把空壳页保存成正文。"""
+        body_text = self._normalize_text(soup.get_text('\n', strip=True))
+        title = (article_info.get('title') or '').strip()
+        author = (article_info.get('author') or '').strip()
+        content_text = self._normalize_text(article_info.get('content_text') or '')
+        has_content_container = bool(soup.find('div', {'id': 'js_content'}))
+
+        for pattern in self.WECHAT_UNAVAILABLE_PATTERNS:
+            if re.search(pattern, body_text, re.IGNORECASE):
+                return re.sub(r'\s+', ' ', pattern).strip('^$')
+
+        looks_like_empty_shell = (
+            title in ("", "未知标题")
+            and author in ("", "未知作者")
+            and not content_text
+            and not has_content_container
+        )
+        if looks_like_empty_shell:
+            return "页面未返回可提取的微信正文，疑似已删除或不可访问"
+
+        return None
     
     def _extract_general_info(self, soup):
         """提取普通网页信息"""
@@ -1132,7 +1177,26 @@ class ArticleFetcher:
         
         return base_url
 
-def main():
+def _build_fetcher(enable_image_ocr=False, mineru_url=None, verbose=False):
+    return ArticleFetcher(
+        enable_image_ocr=enable_image_ocr,
+        mineru_url=mineru_url,
+        verbose=verbose,
+    )
+
+
+def _apply_output_flags(args):
+    if getattr(args, 'all', False) or getattr(args, 'all_formats', False):
+        return True, True, True, True
+    return (
+        getattr(args, 'html', False),
+        getattr(args, 'json', False),
+        getattr(args, 'pdf', False),
+        True,
+    )
+
+
+def _run_fetch_cli(argv):
     parser = argparse.ArgumentParser(description='获取文章内容并转换为Markdown')
     parser.add_argument('url', nargs='?', help='文章URL')
     parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
@@ -1146,7 +1210,7 @@ def main():
     parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
     parser.add_argument('--mineru-url', help='MinerU 服务地址 (默认读取 WESPY_MINERU_URL 或使用本地开发地址)')
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     
     # 如果没有提供URL，进入交互模式
     if not args.url:
@@ -1166,7 +1230,7 @@ def main():
         print("4. Markdown + PDF")
         print("5. 全部格式 (HTML + JSON + PDF + Markdown)")
         
-        choice = input("请选择 (1-4, 回车使用默认1): ").strip() or '1'
+        choice = input("请选择 (1-5, 回车使用默认1): ").strip() or '1'
         
         save_html = False
         save_json = False
@@ -1223,11 +1287,7 @@ def main():
         if mineru_url:
             print(f"MinerU URL: {mineru_url}")
 
-    fetcher = ArticleFetcher(
-        enable_image_ocr=image_ocr,
-        mineru_url=mineru_url,
-        verbose=args.verbose,
-    )
+    fetcher = _build_fetcher(enable_image_ocr=image_ocr, mineru_url=mineru_url, verbose=args.verbose)
 
     # 检查是否为专辑URL
     if fetcher.album_fetcher.is_album_url(url):
@@ -1266,7 +1326,11 @@ def main():
         # 单篇文章处理
         result = fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
 
-        if result:
+        if result and result.get('fetch_status') == 'unavailable':
+            print("\n文章不可用，已跳过保存。")
+            print(f"原因: {result.get('unavailable_reason') or '页面不可访问'}")
+            sys.exit(1)
+        elif result:
             print(f"\n成功获取文章!")
             print(f"标题: {result['title']}")
             print(f"作者: {result['author']}")
@@ -1274,6 +1338,212 @@ def main():
         else:
             print("文章获取失败!")
             sys.exit(1)
+
+
+def _build_subscription_parser():
+    parser = argparse.ArgumentParser(description='微信公众号订阅与批量 Markdown 下载')
+    parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
+    parser.add_argument('--db-path', help='SQLite 数据库路径 (默认: ~/.wespy/wespy.db)')
+
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    auth_parser = subparsers.add_parser('auth', help='管理公众号后台认证信息')
+    auth_subparsers = auth_parser.add_subparsers(dest='auth_command', required=True)
+
+    auth_set = auth_subparsers.add_parser('set', help='设置 token 和 cookie')
+    auth_set.add_argument('--token', required=True, help='公众号后台 token')
+    auth_set.add_argument('--cookie', help='完整 Cookie 字符串')
+    auth_set.add_argument('--cookie-file', help='从文件读取 Cookie 字符串')
+
+    auth_login = auth_subparsers.add_parser('login', help='扫码登录公众号后台并自动写入 SQLite')
+    auth_login.add_argument('--qr-output', help='二维码图片保存路径 (默认: ~/.wespy/login-qrcode.png)')
+    auth_login.add_argument('--timeout', type=int, default=180, help='扫码登录超时时间，单位秒 (默认: 180)')
+    auth_login.add_argument('--poll-interval', type=int, default=2, help='轮询间隔，单位秒 (默认: 2)')
+
+    auth_subparsers.add_parser('show', help='查看当前认证信息状态')
+    auth_subparsers.add_parser('clear', help='清除当前认证信息')
+
+    subscribe_parser = subparsers.add_parser('subscribe', help='订阅指定公众号')
+    subscribe_parser.add_argument('target', help='公众号名称关键词或公众号文章链接')
+
+    subparsers.add_parser('subscriptions', help='列出已订阅公众号')
+
+    sync_parser = subparsers.add_parser('sync', help='同步订阅公众号的文章列表')
+    sync_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
+    sync_parser.add_argument('--all', action='store_true', help='同步全部已订阅公众号')
+    sync_parser.add_argument('--max-pages', type=int, help='限制单个公众号最多同步页数')
+
+    download_parser = subparsers.add_parser('download-account', help='批量下载公众号文章为 Markdown')
+    download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
+    download_parser.add_argument('--all-accounts', action='store_true', help='下载全部已订阅公众号')
+    download_parser.add_argument('--all-articles', action='store_true', help='包含已下载文章，默认仅下载未下载文章')
+    download_parser.add_argument('--limit', type=int, help='限制下载文章数量')
+    download_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
+    download_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
+    download_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
+    download_parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件 (依赖 agent-browser)')
+    download_parser.add_argument('--all-formats', action='store_true', help='保存所有格式文件 (HTML, JSON, PDF, Markdown)')
+    download_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
+    download_parser.add_argument('--mineru-url', help='MinerU 服务地址')
+
+    sync_download_parser = subparsers.add_parser('sync-and-download', help='同步后下载未下载文章')
+    sync_download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
+    sync_download_parser.add_argument('--all-accounts', action='store_true', help='同步并下载全部已订阅公众号')
+    sync_download_parser.add_argument('--max-pages', type=int, help='限制单个公众号最多同步页数')
+    sync_download_parser.add_argument('--limit', type=int, help='限制下载文章数量')
+    sync_download_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
+    sync_download_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
+    sync_download_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
+    sync_download_parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件 (依赖 agent-browser)')
+    sync_download_parser.add_argument('--all-formats', action='store_true', help='保存所有格式文件 (HTML, JSON, PDF, Markdown)')
+    sync_download_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
+    sync_download_parser.add_argument('--mineru-url', help='MinerU 服务地址')
+
+    return parser
+
+
+def _resolve_cookie_value(args):
+    if getattr(args, 'cookie', None):
+        return args.cookie
+    if getattr(args, 'cookie_file', None):
+        with open(args.cookie_file, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    raise RuntimeError("请通过 --cookie 或 --cookie-file 提供 Cookie")
+
+
+def _resolve_account_targets(service, args):
+    if getattr(args, 'all', False) or getattr(args, 'all_accounts', False):
+        accounts = service.list_accounts()
+        if not accounts:
+            raise RuntimeError("当前没有已订阅公众号")
+        return [account['fakeid'] for account in accounts]
+    if getattr(args, 'account', None):
+        return [args.account]
+    raise RuntimeError("请提供公众号名称/fakeid，或使用 --all")
+
+
+def _run_subscription_cli(argv):
+    parser = _build_subscription_parser()
+    args = parser.parse_args(argv)
+
+    store = SubscriptionStore(db_path=args.db_path)
+    service = SubscriptionService(store, verbose=args.verbose)
+
+    if args.command == 'auth':
+        if args.auth_command == 'set':
+            cookie = _resolve_cookie_value(args)
+            service.set_auth(args.token, cookie)
+            print(f"已保存公众号后台认证信息到: {store.db_path}")
+            return
+        if args.auth_command == 'login':
+            result = service.login_via_qrcode(
+                qr_output_path=args.qr_output,
+                timeout=args.timeout,
+                poll_interval=args.poll_interval,
+            )
+            print("扫码登录成功")
+            if result.get('nickname'):
+                print(f"公众号: {result['nickname']}")
+            print(f"token: {result['token']}")
+            print(f"二维码文件: {result['qr_path']}")
+            print(f"数据库: {store.db_path}")
+            return
+        if args.auth_command == 'show':
+            auth = service.get_auth()
+            if not auth:
+                print(f"未配置认证信息: {store.db_path}")
+                return
+            print(f"数据库: {store.db_path}")
+            print(f"token: {auth['token']}")
+            print(f"cookie长度: {len(auth['cookie'])}")
+            print(f"更新时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(auth['updated_at']))}")
+            return
+        if args.auth_command == 'clear':
+            service.clear_auth()
+            print("已清除公众号后台认证信息")
+            return
+
+    if args.command == 'subscribe':
+        account, resolved_query = service.subscribe(args.target)
+        print(f"已订阅公众号: {account['nickname']}")
+        print(f"fakeid: {account['fakeid']}")
+        if resolved_query != args.target:
+            print(f"解析目标: {resolved_query}")
+        return
+
+    if args.command == 'subscriptions':
+        accounts = service.list_accounts()
+        if not accounts:
+            print("当前没有已订阅公众号")
+            return
+        for account in accounts:
+            print(f"- {account['nickname']} ({account['fakeid']})")
+            print(f"  已同步文章: {account.get('article_count', 0)}")
+            print(f"  待下载文章: {account.get('pending_count', 0) or 0}")
+        return
+
+    if args.command == 'sync':
+        for identifier in _resolve_account_targets(service, args):
+            result = service.sync_account(identifier, max_pages=args.max_pages)
+            account = result['account']
+            print(f"已同步公众号: {account['nickname']} ({account['fakeid']})")
+            print(
+                f"页数: {result['pages']}, 新增文章: {result['new_articles']}, "
+                f"更新文章: {result['updated_articles']}, 本次扫描: {result['synced_articles']}"
+            )
+        return
+
+    if args.command in ('download-account', 'sync-and-download'):
+        save_html, save_json, save_pdf, save_markdown = _apply_output_flags(args)
+        fetcher = _build_fetcher(
+            enable_image_ocr=getattr(args, 'image_ocr', False),
+            mineru_url=getattr(args, 'mineru_url', None),
+            verbose=args.verbose,
+        )
+
+        for identifier in _resolve_account_targets(service, args):
+            if args.command == 'sync-and-download':
+                sync_result = service.sync_account(identifier, max_pages=args.max_pages)
+                print(
+                    f"已同步公众号: {sync_result['account']['nickname']} ({sync_result['account']['fakeid']}), "
+                    f"新增文章: {sync_result['new_articles']}"
+                )
+
+            result = service.download_account(
+                identifier,
+                fetcher,
+                output_root=args.output,
+                only_undownloaded=not getattr(args, 'all_articles', False),
+                limit=args.limit,
+                save_html=save_html,
+                save_json=save_json,
+                save_markdown=save_markdown,
+                save_pdf=save_pdf,
+            )
+            print(
+                f"下载完成: {result['account']['nickname']} "
+                f"成功 {result['success']} / 总计 {result['total']} / "
+                f"不可用 {result.get('unavailable', 0)} / 失败 {result['failed']}"
+            )
+            if result['output_dir']:
+                print(f"输出目录: {result['output_dir']}")
+        return
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    subcommands = {'auth', 'subscribe', 'subscriptions', 'sync', 'download-account', 'sync-and-download'}
+    try:
+        if any(arg in subcommands for arg in argv):
+            _run_subscription_cli(argv)
+        else:
+            _run_fetch_cli(argv)
+    except RuntimeError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("已中断")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
