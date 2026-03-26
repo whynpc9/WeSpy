@@ -12,9 +12,10 @@ import urllib.parse
 from bs4 import BeautifulSoup
 import time
 import json
+from wespy.pdf_export import AgentBrowserPDFExporter
 
 class JuejinFetcher:
-    def __init__(self):
+    def __init__(self, verbose=False):
         self.session = requests.Session()
         # 设置请求头，模拟浏览器
         self.session.headers.update({
@@ -26,8 +27,10 @@ class JuejinFetcher:
             'Upgrade-Insecure-Requests': '1',
             'Referer': 'https://juejin.cn/'
         })
+        self.verbose = verbose
+        self.pdf_exporter = AgentBrowserPDFExporter(verbose=verbose)
     
-    def fetch_article(self, url, output_dir="articles", save_html=False, save_json=False, save_markdown=True):
+    def fetch_article(self, url, output_dir="articles", save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """
         获取掘金文章内容
         
@@ -37,6 +40,7 @@ class JuejinFetcher:
             save_html (bool): 是否保存HTML文件
             save_json (bool): 是否保存JSON文件
             save_markdown (bool): 是否保存Markdown文件
+            save_pdf (bool): 是否保存PDF文件
         
         Returns:
             dict: 包含文章信息的字典
@@ -45,13 +49,13 @@ class JuejinFetcher:
             if 'juejin.cn' not in url:
                 print("警告：URL不是掘金链接，但仍尝试获取")
             
-            return self._fetch_juejin_article(url, output_dir, save_html, save_json, save_markdown)
+            return self._fetch_juejin_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
                 
         except Exception as e:
             print(f"获取掘金文章失败: {e}")
             return None
     
-    def _fetch_juejin_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True):
+    def _fetch_juejin_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """获取掘金文章"""
         print(f"正在获取掘金文章: {url}")
         
@@ -71,7 +75,7 @@ class JuejinFetcher:
         article_info['html_content'] = response.text
         
         # 保存文章
-        self._save_article(article_info, output_dir, save_html, save_json, save_markdown)
+        self._save_article(article_info, output_dir, save_html, save_json, save_markdown, save_pdf)
         
         return article_info
     
@@ -126,7 +130,7 @@ class JuejinFetcher:
         
         return info
     
-    def _save_article(self, article_info, output_dir, save_html=False, save_json=False, save_markdown=True):
+    def _save_article(self, article_info, output_dir, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """保存文章到文件"""
         # 创建输出目录
         if not os.path.exists(output_dir):
@@ -148,6 +152,16 @@ class JuejinFetcher:
             
             print(f"HTML文件已保存: {html_path}")
             saved_files.append(('HTML', html_path))
+
+        if save_pdf:
+            pdf_filename = f"{safe_title}_{timestamp}.pdf"
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            try:
+                self.pdf_exporter.export_url(article_info['url'], pdf_path)
+                print(f"PDF文件已保存: {pdf_path}")
+                saved_files.append(('PDF', pdf_path))
+            except Exception as e:
+                print(f"导出PDF失败: {e}")
         
         # 保存文章信息为JSON
         if save_json:
@@ -162,6 +176,7 @@ class JuejinFetcher:
                 'view_count': article_info.get('view_count', ''),
                 'url': article_info['url'],
                 'html_file': f"{safe_title}_{timestamp}.html" if save_html else None,
+                'pdf_file': f"{safe_title}_{timestamp}.pdf" if save_pdf else None,
                 'fetch_time': time.strftime('%Y-%m-%d %H:%M:%S')
             }
             
@@ -438,4 +453,3 @@ class JuejinFetcher:
                 return article_root
         
         return cleaned_content
-

@@ -16,6 +16,7 @@ import json
 import argparse
 from wespy.juejin import JuejinFetcher
 from wespy.ocr import MinerUOCRClient
+from wespy.pdf_export import AgentBrowserPDFExporter
 
 class WeChatAlbumFetcher:
     """微信公众号专辑文章列表获取器"""
@@ -200,7 +201,7 @@ class ArticleFetcher:
             'Upgrade-Insecure-Requests': '1',
         })
         # 初始化掘金获取器
-        self.juejin_fetcher = JuejinFetcher()
+        self.juejin_fetcher = JuejinFetcher(verbose=verbose)
         # 初始化微信专辑获取器
         self.album_fetcher = WeChatAlbumFetcher()
         self.enable_image_ocr = enable_image_ocr
@@ -217,8 +218,9 @@ class ArticleFetcher:
             if self.enable_image_ocr else None
         )
         self._image_ocr_cache = {}
+        self.pdf_exporter = AgentBrowserPDFExporter(verbose=verbose)
 
-    def fetch_album_articles(self, album_url, output_dir="articles", max_articles=None, save_html=False, save_json=False, save_markdown=True):
+    def fetch_album_articles(self, album_url, output_dir="articles", max_articles=None, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """
         批量获取微信专辑中的所有文章
 
@@ -229,6 +231,7 @@ class ArticleFetcher:
             save_html (bool): 是否保存HTML文件
             save_json (bool): 是否保存JSON文件
             save_markdown (bool): 是否保存Markdown文件
+            save_pdf (bool): 是否保存PDF文件
 
         Returns:
             list: 成功获取的文章信息列表
@@ -259,7 +262,8 @@ class ArticleFetcher:
                     album_output_dir,
                     save_html,
                     save_json,
-                    save_markdown
+                    save_markdown,
+                    save_pdf
                 )
 
                 if article_result:
@@ -331,7 +335,7 @@ class ArticleFetcher:
 
         print(f"专辑汇总信息已保存: {summary_file}")
 
-    def fetch_article(self, url, output_dir="articles", save_html=False, save_json=False, save_markdown=True):
+    def fetch_article(self, url, output_dir="articles", save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """
         获取文章内容
         
@@ -341,6 +345,7 @@ class ArticleFetcher:
             save_html (bool): 是否保存HTML文件
             save_json (bool): 是否保存JSON文件
             save_markdown (bool): 是否保存Markdown文件
+            save_pdf (bool): 是否保存PDF文件
         
         Returns:
             dict: 包含文章信息的字典
@@ -349,21 +354,21 @@ class ArticleFetcher:
             # 特殊处理微信专辑URL
             if self.album_fetcher.is_album_url(url):
                 print("检测到微信专辑URL，将批量下载专辑中的所有文章")
-                return self.fetch_album_articles(url, output_dir, max_articles=10, save_html=save_html, save_json=save_json, save_markdown=save_markdown)
+                return self.fetch_album_articles(url, output_dir, max_articles=10, save_html=save_html, save_json=save_json, save_markdown=save_markdown, save_pdf=save_pdf)
             # 特殊处理微信公众号链接
             elif 'mp.weixin.qq.com' in url:
-                return self._fetch_wechat_article(url, output_dir, save_html, save_json, save_markdown)
+                return self._fetch_wechat_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
             # 特殊处理掘金链接
             elif 'juejin.cn' in url:
-                return self.juejin_fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown)
+                return self.juejin_fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
             else:
-                return self._fetch_general_article(url, output_dir, save_html, save_json, save_markdown)
+                return self._fetch_general_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
                 
         except Exception as e:
             print(f"获取文章失败: {e}")
             return None
     
-    def _fetch_wechat_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True):
+    def _fetch_wechat_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """获取微信公众号文章"""
         print(f"正在获取微信文章: {url}")
         
@@ -383,11 +388,11 @@ class ArticleFetcher:
         article_info['html_content'] = response.text
         
         # 保存文章
-        self._save_article(article_info, output_dir, save_html, save_json, save_markdown)
+        self._save_article(article_info, output_dir, save_html, save_json, save_markdown, save_pdf)
         
         return article_info
     
-    def _fetch_general_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True):
+    def _fetch_general_article(self, url, output_dir, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """获取普通网页文章"""
         print(f"正在获取文章: {url}")
         
@@ -406,7 +411,7 @@ class ArticleFetcher:
         article_info['html_content'] = response.text
         
         # 保存文章
-        self._save_article(article_info, output_dir, save_html, save_json, save_markdown)
+        self._save_article(article_info, output_dir, save_html, save_json, save_markdown, save_pdf)
         
         return article_info
     
@@ -748,7 +753,7 @@ class ArticleFetcher:
 
             current = current.parent if getattr(current, 'parent', None) else None
 
-    def _save_article(self, article_info, output_dir, save_html=False, save_json=False, save_markdown=True):
+    def _save_article(self, article_info, output_dir, save_html=False, save_json=False, save_markdown=True, save_pdf=False):
         """保存文章到文件"""
         # 创建输出目录
         if not os.path.exists(output_dir):
@@ -770,6 +775,16 @@ class ArticleFetcher:
             
             print(f"HTML文件已保存: {html_path}")
             saved_files.append(('HTML', html_path))
+
+        if save_pdf:
+            pdf_filename = f"{safe_title}_{timestamp}.pdf"
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            try:
+                self.pdf_exporter.export_url(article_info['url'], pdf_path)
+                print(f"PDF文件已保存: {pdf_path}")
+                saved_files.append(('PDF', pdf_path))
+            except Exception as e:
+                print(f"导出PDF失败: {e}")
         
         # 保存文章信息为JSON
         if save_json:
@@ -782,6 +797,7 @@ class ArticleFetcher:
                 'publish_time': article_info['publish_time'],
                 'url': article_info['url'],
                 'html_file': f"{safe_title}_{timestamp}.html" if save_html else None,
+                'pdf_file': f"{safe_title}_{timestamp}.pdf" if save_pdf else None,
                 'fetch_time': time.strftime('%Y-%m-%d %H:%M:%S')
             }
             
@@ -1123,7 +1139,8 @@ def main():
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
     parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
     parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
-    parser.add_argument('--all', action='store_true', help='保存所有格式文件 (HTML, JSON, Markdown)')
+    parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件 (依赖 agent-browser)')
+    parser.add_argument('--all', action='store_true', help='保存所有格式文件 (HTML, JSON, PDF, Markdown)')
     parser.add_argument('--max-articles', type=int, help='微信专辑最大下载文章数量 (默认: 10)')
     parser.add_argument('--album-only', action='store_true', help='仅获取专辑文章列表，不下载内容')
     parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
@@ -1146,12 +1163,14 @@ def main():
         print("1. 仅 Markdown (默认)")
         print("2. Markdown + HTML")
         print("3. Markdown + JSON")
-        print("4. 全部格式 (HTML + JSON + Markdown)")
+        print("4. Markdown + PDF")
+        print("5. 全部格式 (HTML + JSON + PDF + Markdown)")
         
         choice = input("请选择 (1-4, 回车使用默认1): ").strip() or '1'
         
         save_html = False
         save_json = False
+        save_pdf = False
         save_markdown = True
         
         if choice == '2':
@@ -1159,8 +1178,11 @@ def main():
         elif choice == '3':
             save_json = True
         elif choice == '4':
+            save_pdf = True
+        elif choice == '5':
             save_html = True
             save_json = True
+            save_pdf = True
 
         # 交互模式默认值
         max_articles = 10
@@ -1176,10 +1198,12 @@ def main():
         if args.all:
             save_html = True
             save_json = True
+            save_pdf = True
             save_markdown = True
         else:
             save_html = args.html
             save_json = args.json
+            save_pdf = args.pdf
             save_markdown = True  # 默认总是保存Markdown
 
         max_articles = args.max_articles or 10
@@ -1190,7 +1214,7 @@ def main():
     if args.verbose:
         print(f"URL: {url}")
         print(f"输出目录: {output_dir}")
-        print(f"输出格式: HTML={save_html}, JSON={save_json}, Markdown={save_markdown}")
+        print(f"输出格式: HTML={save_html}, JSON={save_json}, PDF={save_pdf}, Markdown={save_markdown}")
         if hasattr(args, 'max_articles'):
             print(f"最大文章数量: {max_articles}")
         if hasattr(args, 'album_only'):
@@ -1231,7 +1255,7 @@ def main():
                 sys.exit(1)
         else:
             # 批量下载专辑文章
-            result = fetcher.fetch_album_articles(url, output_dir, max_articles, save_html, save_json, save_markdown)
+            result = fetcher.fetch_album_articles(url, output_dir, max_articles, save_html, save_json, save_markdown, save_pdf)
             if result:
                 print(f"\n批量下载完成!")
                 print(f"成功下载: {len(result)} 篇文章")
@@ -1240,7 +1264,7 @@ def main():
                 sys.exit(1)
     else:
         # 单篇文章处理
-        result = fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown)
+        result = fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
 
         if result:
             print(f"\n成功获取文章!")

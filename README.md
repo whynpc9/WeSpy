@@ -4,7 +4,7 @@
 [![Python Support](https://img.shields.io/pypi/pyversions/wespy.svg)](https://pypi.org/project/wespy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Python 工具,支持图片防盗链处理、专辑批量下载和多种输出格式。
+WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Python 工具，支持图片防盗链处理、专辑批量下载、图片 OCR，以及基于 agent-browser 的 PDF 导出。
 
 ## Skill
 
@@ -18,7 +18,8 @@ WeSpy 是一个用于获取wx公众号文章并转换为 Markdown 格式的 Pyth
 - 🎵 **专辑批量下载**：支持微信公众号专辑文章批量获取和下载
 - 🖼️ **图片防盗链处理**：自动处理图片防盗链问题，确保图片正常显示
 - 🔎 **图片 OCR 合并**：可选接入 MinerU，对公众号图片提取 Markdown，并以引用块形式合并进正文
-- 📝 **灵活输出配置**：默认只输出 Markdown，可选择 HTML 和 JSON 格式
+- 📄 **浏览器 PDF 导出**：可选调用 agent-browser，把原网页按浏览器渲染效果导出为 PDF
+- 📝 **灵活输出配置**：默认只输出 Markdown，可选择 HTML、JSON 和 PDF 格式
 - 🌐 **通用网页支持**：支持大多数网站的文章提取
 - 🎯 **命令行友好**：提供简单易用的命令行界面
 - 📂 **批量处理**：支持批量处理多个文章链接和专辑文章
@@ -56,7 +57,10 @@ wespy "https://example.com/article" --html
 # 输出 Markdown + JSON 格式
 wespy "https://example.com/article" --json
 
-# 输出所有格式（HTML + JSON + Markdown）
+# 输出 Markdown + PDF 格式
+wespy "https://mp.weixin.qq.com/s/xxxxx" --pdf
+
+# 输出所有格式（HTML + JSON + PDF + Markdown）
 wespy "https://example.com/article" --all
 
 # 对公众号图片启用 OCR，并把结果合并进 Markdown
@@ -93,7 +97,8 @@ wespy
 1. 仅 Markdown（默认）
 2. Markdown + HTML
 3. Markdown + JSON  
-4. 全部格式（HTML + JSON + Markdown）
+4. Markdown + PDF
+5. 全部格式（HTML + JSON + PDF + Markdown）
 
 ### Python API 使用
 
@@ -122,6 +127,7 @@ article_info = fetcher.fetch_article(
     output_dir="articles",
     save_html=True,      # 同时保存HTML文件
     save_json=True,      # 同时保存JSON文件
+    save_pdf=True,       # 同时保存PDF文件（依赖 agent-browser）
     save_markdown=True   # 保存Markdown文件（默认为True）
 )
 
@@ -150,6 +156,7 @@ successful_articles = fetcher.fetch_album_articles(
     max_articles=10,
     save_html=True,
     save_json=True,
+    save_pdf=True,
     save_markdown=True
 )
 
@@ -169,12 +176,14 @@ articles/
 ### 可选格式
 - **HTML 文件**：原始 HTML 内容（使用 `--html` 选项）
 - **JSON 文件**：文章元数据信息（使用 `--json` 选项）
+- **PDF 文件**：浏览器渲染后的页面导出（使用 `--pdf` 选项，依赖 `agent-browser`）
 - **Markdown 文件**：转换后的 Markdown 格式内容（默认生成）
 
 ### 全部格式输出示例
 ```
 articles/
 ├── 文章标题_1627834567.html      # 原始HTML
+├── 文章标题_1627834567.pdf       # 浏览器渲染PDF
 ├── 文章标题_1627834567.md        # Markdown格式
 └── 文章标题_1627834567_info.json # 元数据信息
 ```
@@ -188,8 +197,24 @@ articles/
   "publish_time": "2023-07-30",
   "url": "https://example.com/article",
   "html_file": "文章标题_1627834567.html",
+  "pdf_file": "文章标题_1627834567.pdf",
   "fetch_time": "2023-07-30 12:34:56"
 }
+```
+
+## PDF 导出依赖
+
+如果需要 `--pdf` 能力，请先安装并初始化 [agent-browser](https://github.com/vercel-labs/agent-browser)：
+
+```bash
+npm install -g agent-browser
+agent-browser install
+```
+
+如果本机使用的不是默认命令名，也可以通过环境变量 `WESPY_AGENT_BROWSER_CMD` 指定，例如：
+
+```bash
+export WESPY_AGENT_BROWSER_CMD="npx agent-browser"
 ```
 
 ## 支持的网站
@@ -208,7 +233,7 @@ WeSpy 使用智能算法尝试从以下元素中提取内容：
 ## 命令行选项
 
 ```
-wespy [-h] [-o OUTPUT] [-v] [--html] [--json] [--all] [--max-articles MAX_ARTICLES] [--album-only] url
+wespy [-h] [-o OUTPUT] [-v] [--html] [--json] [--pdf] [--all] [--max-articles MAX_ARTICLES] [--album-only] url
 
 获取文章内容并转换为Markdown，支持微信专辑批量下载
 
@@ -222,7 +247,8 @@ optional arguments:
   -v, --verbose         显示详细信息
   --html                同时保存HTML文件
   --json                同时保存JSON信息文件
-  --all                 保存所有格式文件 (HTML, JSON, Markdown)
+  --pdf                 同时保存PDF文件 (依赖 agent-browser)
+  --all                 保存所有格式文件 (HTML, JSON, PDF, Markdown)
   --max-articles MAX_ARTICLES
                         微信专辑最大下载文章数量 (默认: 10)
   --album-only          仅获取专辑文章列表，不下载内容
@@ -239,7 +265,8 @@ optional arguments:
 - **默认行为**：只生成 Markdown 文件
 - **`--html`**：生成 Markdown + HTML 文件
 - **`--json`**：生成 Markdown + JSON 文件
-- **`--all`**：生成所有格式文件（HTML + JSON + Markdown）
+- **`--pdf`**：生成 Markdown + PDF 文件
+- **`--all`**：生成所有格式文件（HTML + JSON + PDF + Markdown）
 
 ## 微信专辑功能
 
