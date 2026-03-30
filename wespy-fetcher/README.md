@@ -1,14 +1,14 @@
-# WeSpy Fetcher Skill
+# wespy-plus Fetcher Skill
 
 > 仓库地址: https://github.com/whynpc9/WeSpy
 > 版本: v1.5.0
 
-把当前 fork 的 [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy) 封装成可直接调用的 Skill，支持微信公众号文章抓取、专辑批量下载、URL 转 Markdown 等完整能力。
+把当前 fork 的 [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy) 封装成可直接调用的 `wespy-plus` Skill，支持微信公众号文章抓取、专辑批量下载、URL 转 Markdown 等完整能力。
 
 ## 依赖仓库
 
 - 当前仓库：`https://github.com/whynpc9/WeSpy`
-- 与上游 WeSpy 行为保持尽量一致
+- 与当前 `wespy-plus` 项目行为保持一致
 
 ## 功能特性
 

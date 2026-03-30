@@ -1,634 +1,162 @@
-# WeSpy
+# wespy-plus
 
-[![PyPI version](https://badge.fury.io/py/wespy.svg)](https://badge.fury.io/py/wespy)
-[![Python Support](https://img.shields.io/pypi/pyversions/wespy.svg)](https://pypi.org/project/wespy/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+`wespy-plus` 是一个面向 Markdown 输出的文章抓取工具，重点支持微信公众号文章、微信公众号专辑，以及基于公众号后台登录态的订阅同步和批量下载。
 
-WeSpy 是一个用于获取 wx 公众号文章并转换为 Markdown 格式的 Python 工具，支持图片防盗链处理、专辑批量下载、图片 OCR、基于 agent-browser 的 PDF 导出，以及基于 SQLite 的公众号订阅与批量 Markdown 下载。
+这个项目基于原始的 [tianchangNorth/WeSpy](https://github.com/tianchangNorth/WeSpy) 持续演进；公众号订阅、扫码登录、批量同步这条链路参考了 [wechat-article-exporter](https://github.com/wechat-article/wechat-article-exporter) 的思路。
 
-## Skill
+如果你要启用“订阅公众号 / 同步文章列表 / 批量下载正文”这组能力，请先完成这份前置准备工作：
+[mptext 使用说明](https://docs.mptext.top/get-started/usage.html)
 
-- Codex Skill: [wespy-fetcher](https://github.com/whynpc9/WeSpy/tree/main/wespy-fetcher)
-- 当前 fork 仓库: [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy)
+## 当前能力
 
-## 特性
-
-- 🚀 **智能文章提取**：自动识别文章标题、作者、发布时间和正文内容
-- 📱 **wx公众号支持**：专门优化wx公众号文章的提取，支持长短链接自动转换
-- 🎵 **专辑批量下载**：支持微信公众号专辑文章批量获取和下载
-- 🗂️ **公众号订阅同步**：支持把公众号加入本地订阅清单，分页同步文章列表并批量导出 Markdown
-- 🖼️ **图片防盗链处理**：自动处理图片防盗链问题，确保图片正常显示
-- 🔎 **图片 OCR 合并**：可选接入 MinerU，对公众号图片提取 Markdown，并以引用块形式合并进正文
-- 📄 **浏览器 PDF 导出**：可选调用 agent-browser，把原网页按浏览器渲染效果导出为 PDF
-- 📝 **灵活输出配置**：默认只输出 Markdown，可选择 HTML、JSON 和 PDF 格式
-- 🌐 **通用网页支持**：支持大多数网站的文章提取
-- 🎯 **命令行友好**：提供简单易用的命令行界面
-- 📂 **批量处理**：支持批量处理多个文章链接和专辑文章
+- 单篇文章抓取，默认导出 Markdown
+- 微信公众号专辑列表获取与批量下载
+- 公众号订阅、本地 SQLite 存储、文章列表同步
+- 批量下载公众号文章，默认 Markdown，可附带 HTML / JSON / PDF
+- 图片 OCR 合并进 Markdown
+- 浏览器渲染 PDF 导出
+- `--dry-run` 计划预览
+- `--output-json` 结构化输出
 
 ## 安装
 
-### 使用 pip 安装（推荐）
+推荐直接从源码安装：
 
 ```bash
-pip install wespy
-```
-
-### 从源码安装
-
-```bash
-git clone https://github.com/tianchang/wespy.git
-cd wespy
+git clone https://github.com/whynpc9/WeSpy.git
+cd WeSpy
 pip install -e .
 ```
 
-## 依赖矩阵
-
-| 能力 | 是否默认可用 | 额外依赖/环境 | 缺失时的行为 |
-| --- | --- | --- | --- |
-| 单篇文章转 Markdown | 是 | 无 | 正常可用 |
-| 微信专辑批量下载 | 是 | 无 | 正常可用 |
-| 公众号订阅 / 同步 | 是 | 有效的公众号后台登录态 | 不能同步，但普通 URL 抓取不受影响 |
-| 扫码登录公众号后台 | 是 | 能访问 `mp.weixin.qq.com` | 可改用 `auth set --token --cookie` 手动配置 |
-| 图片 OCR | 否 | 可访问的 MinerU 服务 | 不启用 `--image-ocr` 时完全不受影响 |
-| PDF 导出 | 否 | `agent-browser` + Chrome | 不启用 `--pdf` 时完全不受影响 |
-
-## 最小可用功能集合
-
-只安装 Python 依赖时，WeSpy 仍然应该可用，而且默认只依赖这部分能力：
-
-- 单篇文章抓取并导出 Markdown
-- 微信专辑文章列表获取与批量 Markdown 下载
-- 通用网页文章抓取
-- 本地 SQLite 存储订阅数据
-
-也就是说：
-
-- 没有 `agent-browser` 时，不要使用 `--pdf`
-- 没有 MinerU 服务时，不要使用 `--image-ocr`
-- 没有公众号后台登录态时，不要使用 `subscribe` / `sync` / `download-account`
-
-## Agent 友好 CLI 约定
-
-为了更适合 agent、终端脚本和自动化调用，当前 CLI 约定是：
-
-- 非交互优先：常规抓取必须显式传入 URL
-- 交互模式显式启用：使用 `wespy --interactive`
-- 计划预览：使用 `--dry-run`
-- 结构化输出：使用 `--output-json`
-- 批量任务建议先用 `--limit 1` 做 smoke test，再放大范围
-
-## 可选依赖配置
-
-基础能力只需要安装 Python 依赖：
+安装后主命令为：
 
 ```bash
-pip install -e .
+wespy-plus --help
 ```
 
-按需启用增强能力时，再补充下面的配置。
+兼容性说明：
 
-### PDF 导出配置
+- 当前同时保留 `wespy-plus` 和 `wespy` 两个 CLI 入口
+- Python 包名暂时仍然是 `wespy`
 
-如果需要 `--pdf`，请先安装并初始化 [agent-browser](https://github.com/vercel-labs/agent-browser)：
+## 快速开始
+
+### 单篇文章
+
+```bash
+# 默认只输出 Markdown
+wespy-plus "https://mp.weixin.qq.com/s/xxxxx"
+
+# 输出结构化 JSON
+wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --output-json
+
+# 只预览执行计划
+wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --dry-run
+
+# 同时导出 PDF
+wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --pdf
+
+# 显式进入交互模式
+wespy-plus --interactive
+```
+
+### 微信专辑
+
+```bash
+# 只获取专辑文章列表
+wespy-plus "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only
+
+# 批量下载专辑文章
+wespy-plus "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 10
+```
+
+### 公众号订阅与批量下载
+
+先完成上面的 mptext 前置准备，再执行：
+
+```bash
+# 扫码登录公众号后台
+wespy-plus auth login
+
+# 或者手动写入 token / cookie
+wespy-plus auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."
+
+# 订阅公众号
+wespy-plus subscribe "人民日报"
+wespy-plus subscribe "https://mp.weixin.qq.com/s/xxxxx"
+
+# 查看本地订阅
+wespy-plus subscriptions
+
+# 同步文章列表
+wespy-plus sync "人民日报"
+
+# 预览同步计划
+wespy-plus sync "人民日报" --dry-run --output-json
+
+# 批量下载正文
+wespy-plus download-account "人民日报"
+
+# 先做一篇 smoke test
+wespy-plus download-account "人民日报" --limit 1 --dry-run --output-json
+
+# 同步后立即下载新增文章
+wespy-plus sync-and-download "人民日报"
+```
+
+默认 SQLite 数据库位置：
+
+```bash
+~/.wespy/wespy.db
+```
+
+如果需要自定义数据库路径：
+
+```bash
+wespy-plus --db-path /path/to/wespy.db subscriptions
+```
+
+## 可选依赖
+
+基础能力只需要 Python 依赖。下面这些属于按需启用。
+
+### PDF 导出
+
+`--pdf` 依赖 [agent-browser](https://github.com/vercel-labs/agent-browser)：
 
 ```bash
 npm install -g agent-browser
 agent-browser install
 ```
 
-如果本机使用的不是默认命令名，也可以通过环境变量 `WESPY_AGENT_BROWSER_CMD` 指定：
+如果命令名不在默认 `PATH`：
 
 ```bash
 export WESPY_AGENT_BROWSER_CMD="npx agent-browser"
 ```
 
-### OCR 配置
+### 图片 OCR
 
-如果需要 `--image-ocr`，请先准备可访问的 MinerU 服务，然后通过参数或环境变量提供地址：
+`--image-ocr` 依赖可访问的 MinerU 服务：
 
 ```bash
 export WESPY_MINERU_URL="http://172.16.3.132:8523"
+wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --image-ocr
 ```
 
-### 公众号订阅配置
+## Agent / 自动化调用建议
 
-如果需要 `subscribe` / `sync` / `download-account`，请先准备公众号后台登录态。推荐直接扫码登录写入 SQLite：
+- 默认走非交互命令，不要依赖提示输入
+- 批量任务先执行 `--limit 1 --dry-run --output-json`
+- 只有确认环境存在时，才启用 `--pdf` 或 `--image-ocr`
+- 如果需要机器可读结果，优先使用 `--output-json`
 
-```bash
-wespy auth login
-```
+## Skill
 
-如果已经有 `token + cookie`，也可以手动写入：
+仓库内提供了对应的 Codex skill：
+[wespy-fetcher](wespy-fetcher/SKILL.md)
 
-```bash
-wespy auth set --token 123456789 --cookie "pass_ticket=...; wap_sid2=...; ..."
-```
+## 开发说明
 
-## 快速开始
-
-### 命令行使用
-
-```bash
-# 获取wx公众号文章（默认只输出 Markdown）
-wespy "https://mp.weixin.qq.com/s/xxxxx"
-
-# 输出结构化 JSON，便于 agent 或脚本消费
-wespy "https://mp.weixin.qq.com/s/xxxxx" --output-json
-
-# 只预览执行计划，不发起抓取
-wespy "https://mp.weixin.qq.com/s/xxxxx" --dry-run
-
-# 指定输出目录
-wespy "https://mp.weixin.qq.com/s/xxxxx" -o /path/to/output
-
-# 输出 Markdown + HTML 格式
-wespy "https://example.com/article" --html
-
-# 输出 Markdown + JSON 格式
-wespy "https://example.com/article" --json
-
-# 输出 Markdown + PDF 格式
-wespy "https://mp.weixin.qq.com/s/xxxxx" --pdf
-
-# 输出所有格式（HTML + JSON + PDF + Markdown）
-wespy "https://example.com/article" --all
-
-# 对公众号图片启用 OCR，并把结果合并进 Markdown
-wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mineru-url http://172.16.3.132:8523
-
-# 显式进入交互模式
-wespy --interactive
-
-# 显示详细信息
-wespy "https://example.com/article" -v
-
-# === 微信专辑功能 ===
-
-# 获取微信专辑文章列表（不下载内容）
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only
-
-# 批量下载微信专辑文章（默认下载前10篇）
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..."
-
-# 限制专辑文章下载数量
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 5
-
-# 下载专辑文章并保存所有格式
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 5 --all
-```
-
-### 公众号订阅与批量下载
-
-订阅功能使用 SQLite 保存本地数据，默认数据库路径为 `~/.wespy/wespy.db`。  
-由于微信文章列表接口依赖公众号后台登录态，这一版支持扫码登录自动写入认证信息，也支持手动提供 `token + cookie`。
-
-```bash
-# 扫码登录公众号后台，二维码默认保存到 ~/.wespy/login-qrcode.png
-wespy auth login
-
-# 指定二维码输出路径和超时时间
-wespy auth login --qr-output /tmp/wespy-login.png --timeout 180
-
-# 保存公众号后台 token 和 cookie
-wespy auth set --token 123456789 --cookie "pass_ticket=...; wap_sid2=...; ..."
-
-# 查看当前认证状态
-wespy auth show
-
-# 订阅公众号（支持公众号名关键词或公众号文章链接）
-wespy subscribe "人民日报"
-wespy subscribe "https://mp.weixin.qq.com/s/xxxxx"
-
-# 查看已订阅公众号
-wespy subscriptions
-
-# 同步指定公众号的文章列表
-wespy sync "人民日报"
-
-# 仅预览同步计划，输出 JSON
-wespy sync "人民日报" --dry-run --output-json
-
-# 同步全部已订阅公众号
-wespy sync --all
-
-# 下载该公众号尚未下载的文章，默认输出 Markdown
-wespy download-account "人民日报"
-
-# 下载该公众号尚未下载的文章，并同时导出 PDF
-wespy download-account "人民日报" --pdf
-
-# 先做小批量 smoke test
-wespy download-account "人民日报" --limit 1 --pdf --dry-run --output-json
-
-# 同步后立即下载新增文章
-wespy sync-and-download "人民日报"
-```
-
-如果希望把数据库放到别处，可以显式指定：
-
-```bash
-wespy --db-path /path/to/wespy.db subscriptions
-```
-
-### 交互式使用
-
-如果需要交互模式，请显式传入 `--interactive`：
-
-```bash
-wespy --interactive
-```
-
-然后根据提示输入文章 URL、输出目录和输出格式选择：
-
-1. 仅 Markdown（默认）
-2. Markdown + HTML
-3. Markdown + JSON  
-4. Markdown + PDF
-5. 全部格式（HTML + JSON + PDF + Markdown）
-
-### Python API 使用
-
-```python
-from wespy import ArticleFetcher
-from wespy.main import WeChatAlbumFetcher
-
-# 创建文章获取器实例
-fetcher = ArticleFetcher()
-
-# 如果只关注 Markdown，并希望把图片 OCR 合并进正文
-ocr_fetcher = ArticleFetcher(
-    enable_image_ocr=True,
-    mineru_url="http://172.16.3.132:8523",
-)
-
-# 获取单篇文章（默认只输出 Markdown）
-article_info = fetcher.fetch_article(
-    url="https://mp.weixin.qq.com/s/xxxxx",
-    output_dir="articles"
-)
-
-# 获取文章并指定输出格式
-article_info = fetcher.fetch_article(
-    url="https://mp.weixin.qq.com/s/xxxxx",
-    output_dir="articles",
-    save_html=True,      # 同时保存HTML文件
-    save_json=True,      # 同时保存JSON文件
-    save_pdf=True,       # 同时保存PDF文件（依赖 agent-browser）
-    save_markdown=True   # 保存Markdown文件（默认为True）
-)
-
-if article_info:
-    print(f"标题: {article_info['title']}")
-    print(f"作者: {article_info['author']}")
-    print(f"发布时间: {article_info['publish_time']}")
-
-# === 微信专辑功能 ===
-
-# 创建专辑获取器
-album_fetcher = WeChatAlbumFetcher()
-
-# 仅获取专辑文章列表
-articles = album_fetcher.fetch_album_articles(
-    "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=...",
-    max_articles=20  # 限制获取数量
-)
-
-print(f"获取到 {len(articles)} 篇文章")
-
-# 批量下载专辑文章
-successful_articles = fetcher.fetch_album_articles(
-    album_url="https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=...",
-    output_dir="articles",
-    max_articles=10,
-    save_html=True,
-    save_json=True,
-    save_pdf=True,
-    save_markdown=True
-)
-
-print(f"成功下载 {len(successful_articles)} 篇文章")
-```
-
-## 输出格式
-
-WeSpy 默认只生成 Markdown 文件，但可以通过配置选项选择其他格式：
-
-### 默认输出（仅 Markdown）
-```
-articles/
-└── 文章标题_1627834567.md        # Markdown格式
-```
-
-### 可选格式
-- **HTML 文件**：原始 HTML 内容（使用 `--html` 选项）
-- **JSON 文件**：文章元数据信息（使用 `--json` 选项）
-- **PDF 文件**：浏览器渲染后的页面导出（使用 `--pdf` 选项，依赖 `agent-browser`）
-- **Markdown 文件**：转换后的 Markdown 格式内容（默认生成）
-
-### 全部格式输出示例
-```
-articles/
-├── 文章标题_1627834567.html      # 原始HTML
-├── 文章标题_1627834567.pdf       # 浏览器渲染PDF
-├── 文章标题_1627834567.md        # Markdown格式
-└── 文章标题_1627834567_info.json # 元数据信息
-```
-
-### JSON 元数据格式
-
-```json
-{
-  "title": "文章标题",
-  "author": "作者名称",
-  "publish_time": "2023-07-30",
-  "url": "https://example.com/article",
-  "html_file": "文章标题_1627834567.html",
-  "pdf_file": "文章标题_1627834567.pdf",
-  "fetch_time": "2023-07-30 12:34:56"
-}
-```
-
-## OCR 依赖
-
-如果需要 `--image-ocr`，请先准备可访问的 MinerU 服务，然后通过参数或环境变量提供地址：
-
-```bash
-wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mineru-url http://172.16.3.132:8523
-
-export WESPY_MINERU_URL="http://172.16.3.132:8523"
-wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr
-```
-
-## 公众号订阅说明
-
-- 存储介质：SQLite，默认路径 `~/.wespy/wespy.db`
-- 当前范围：只同步公众号文章列表和正文内容，不处理评论、阅读量、点赞量、留言回复
-- 默认导出格式：Markdown
-- 可选导出格式：HTML、JSON、PDF
-- 不包含：评论、阅读量、点赞量、留言回复
-- 认证方式：推荐使用 `wespy auth login` 扫码登录，自动写入 SQLite
-- 手动认证：也可提供公众号后台页面中的 `token` 和请求头里的完整 `Cookie`
-- 批量下载默认只处理未下载文章，避免重复导出
-
-## 支持的网站
-
-### 完全支持
-- wx公众号 (mp.weixin.qq.com)
-- 大部分基于标准 HTML 结构的博客和新闻网站
-
-### 通用支持
-WeSpy 使用智能算法尝试从以下元素中提取内容：
-- `<article>` 标签
-- 带有 `content`、`article-content`、`post-content` 等 class 的元素
-- `<main>` 标签
-- 标准的 meta 标签信息
-
-## 命令行选项
-
-```
-wespy [-h] [-o OUTPUT] [-v] [--interactive] [--dry-run] [--output-json] [--html] [--json] [--pdf] [--all] [--max-articles MAX_ARTICLES] [--album-only] [--image-ocr] [--mineru-url MINERU_URL] [url]
-
-获取文章内容并转换为Markdown，支持微信专辑批量下载
-
-positional arguments:
-  url                   文章URL或微信专辑URL
-
-optional arguments:
-  -h, --help            显示帮助信息
-  -o OUTPUT, --output OUTPUT
-                        输出目录 (默认: articles)
-  -v, --verbose         显示详细信息
-  --interactive         显式进入交互模式
-  --dry-run             仅输出执行计划，不发起网络请求也不写入文件
-  --output-json         以 JSON 输出结果，便于 agent 或脚本消费
-  --html                同时保存HTML文件
-  --json                同时保存JSON信息文件
-  --pdf                 同时保存PDF文件 (依赖 agent-browser)
-  --all                 保存所有格式文件 (HTML, JSON, PDF, Markdown)
-  --max-articles MAX_ARTICLES
-                        微信专辑最大下载文章数量 (默认: 10)
-  --album-only          仅获取专辑文章列表，不下载内容
-  --image-ocr           对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown
-  --mineru-url MINERU_URL
-                        MinerU 服务地址
-```
-
-也可以通过环境变量 `WESPY_MINERU_URL` 提供 MinerU 地址，这样命令行里只保留 `--image-ocr` 即可。
-
-启用图片 OCR 后，提取出的文本会追加在对应图片下方，并用引用块包裹，避免 OCR 里的标题或列表打乱原始正文的 Markdown 结构。
-
-### 订阅命令
-
-```
-wespy auth set --token TOKEN --cookie "..."
-wespy auth login [--qr-output PATH] [--timeout SECONDS]
-wespy auth show
-wespy auth clear
-
-wespy subscribe <keyword-or-article-url>
-wespy subscriptions
-
-wespy sync <account>
-wespy sync --all
-wespy sync <account> [--dry-run] [--output-json]
-
-wespy download-account <account> [-o OUTPUT] [--limit N] [--all-articles] [--dry-run] [--output-json]
-wespy download-account --all-accounts [--dry-run] [--output-json]
-
-wespy sync-and-download <account> [-o OUTPUT] [--limit N] [--dry-run] [--output-json]
-wespy sync-and-download --all-accounts [--dry-run] [--output-json]
-```
-
-### 输出格式选项说明
-- **默认行为**：只生成 Markdown 文件
-- **`--html`**：生成 Markdown + HTML 文件
-- **`--json`**：生成 Markdown + JSON 文件
-- **`--pdf`**：生成 Markdown + PDF 文件
-- **`--all`**：生成所有格式文件（HTML + JSON + PDF + Markdown）
-
-## 微信专辑功能
-
-### 功能介绍
-WeSpy 支持微信公众号专辑文章的批量获取和下载，可以一次性下载整个专辑中的所有文章。
-
-### 使用方式
-
-#### 仅获取文章列表
-使用 `--album-only` 参数只获取专辑中的文章列表，不下载具体内容：
-
-```bash
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only
-```
-
-输出示例：
-```
-获取到 25 篇文章:
- 1. 文章标题一
-     URL: http://mp.weixin.qq.com/s?__biz=...
-     时间: 1704067200
-
- 2. 文章标题二
-     URL: http://mp.weixin.qq.com/s?__biz=...
-     时间: 1703980800
-```
-
-文章列表会保存为JSON文件，包含标题、URL、发布时间等完整信息。
-
-#### 批量下载专辑文章
-直接使用专辑URL即可批量下载专辑中的所有文章：
-
-```bash
-# 下载前10篇文章（默认）
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..."
-
-# 限制下载文章数量
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 5
-
-# 下载并保存所有格式
-wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 5 --all
-```
-
-### 输出结构
-专辑文章下载后会创建独立的专辑目录：
-
-```
-articles/
-├── album_1703980800/                    # 专辑专用目录
-│   ├── 文章标题一_1703980800.md         # Markdown格式
-│   ├── 文章标题一_1703980800_info.json  # 文章信息
-│   ├── 文章标题二_1703980801.md         # 下一篇文章
-│   └── ...
-└── album_1703980800_summary.json        # 专辑下载汇总信息
-```
-
-### 汇总信息
-每个专辑下载完成后会生成详细的汇总报告，包含：
-- 专辑URL和下载时间
-- 成功/失败统计
-- 成功下载的文章列表
-- 失败的文章列表和错误信息
-
-### 技术特性
-- **智能分页**：自动处理微信分页获取，支持大型专辑
-- **错误处理**：分离成功和失败的文章，确保部分失败不影响整体下载
-- **速率控制**：内置延迟机制避免请求过快
-- **进度显示**：实时显示下载进度和统计信息
-
-## 依赖要求
-
-- Python 3.6+
-- requests >= 2.20.0
-- beautifulsoup4 >= 4.9.0
-
-## 开发
-
-### 开发环境设置
-
-```bash
-git clone https://github.com/tianchang/wespy.git
-cd wespy
-pip install -e ".[dev]"
-```
-
-### 运行测试
-
-```bash
-python -m pytest tests/
-```
-
-### 代码格式化
-
-```bash
-black wespy/
-flake8 wespy/
-```
-
-## 常见问题
-
-### Q: 为什么有些图片无法显示？
-A: WeSpy 使用 images.weserv.nl 作为代理服务来解决图片防盗链问题。如果仍然无法显示，可能是原图片已被删除或网络问题。
-
-### Q: 支持哪些网站？
-A: WeSpy 对wx公众号有特别优化，对大部分使用标准 HTML 结构的网站都有较好的支持。如果某个网站不支持，欢迎提交 issue。
-
-### Q: 如何批量处理文章？
-A: 目前需要通过脚本调用 Python API 来实现批量处理，命令行版本暂不支持批量处理。
-
-## 贡献
-
-欢迎提交 issue 和 pull request！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-## 许可证
-
-本项目使用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
-
-## 更新日志
-
-### v0.2.0 (2025-01-22)
-- **🎵 新增微信专辑功能**：支持微信公众号专辑文章批量获取和下载
-- **📝 增强命令行选项**：`--max-articles`、`--album-only` 用于专辑操作
-- **🔗 智能链接转换**：自动检测并转换微信长链接为短链接
-- **📊 详细汇总报告**：专辑下载完成后生成详细的统计报告
-- **🚀 优化错误处理**：分离成功和失败的文章，提升批量处理稳定性
-- **⚡ 性能优化**：内置速率控制机制避免请求过快
-- **📁 改进文件组织**：专辑文章保存到独立目录，便于管理
-
-### v0.1.2 (2025-01-01)
-- **改进输出格式配置**：默认只输出 Markdown 文件
-- **新增命令行选项**：`--html`、`--json`、`--all` 用于控制输出格式
-- **优化交互模式**：添加输出格式选择菜单
-- **更新 Python API**：支持参数化输出格式控制
-
-### v0.1.0 (2023-07-30)
-- 初始版本发布
-- 支持wx公众号文章提取
-- 支持通用网页文章提取
-- 支持 HTML/JSON/Markdown 多格式输出
-- 图片防盗链处理
-- 命令行界面
-
-## 联系方式
-
-- GitHub: [https://github.com/tianchangNorth/WeSpy](https://github.com/tianchangNorth/WeSpy)
-- Issues: [https://github.com/tianchangNorth/WeSpy/issues](https://github.com/tianchangNorth/WeSpy/issues)
-
----  
-
-## 推荐🐔场
-
-自用🐔场，稳定，线路多，速度快，[点这里注册](https://joinus-2.202402.best/#/register?code=HlpuGibO)
-
-## 免责声明
-
-本项目仅供学习和研究目的使用。使用本工具时，请务必遵守以下原则：
-
-### 使用责任
-- 用户需自行承担使用本工具的所有风险和责任
-- 请确保您的使用行为符合目标网站的robots.txt文件要求
-- 尊重内容创作者的知识产权，不得用于商业目的
-- 不要对网站服务器造成过大的访问压力
-
-### 法律合规
-- 请遵守当地法律法规以及目标网站的使用条款
-- 不得将本工具用于任何非法或未经授权的活动
-- 下载的内容应仅用于个人学习、研究或存档目的
-
-### 技术风险
-- 网站结构可能随时变化，本工具可能无法正常工作
-- 本工具按"原样"提供，不提供任何明示或暗示的保证
-- 开发者不对因使用本工具造成的任何损失承担责任
-
-### 数据安全
-- 本工具不会收集或上传您的任何个人信息
-- 所有数据处理都在本地完成
-- 请妥善保管您下载的内容
-
----
-
-**重要提醒**: 请合理、合法、负责任地使用本工具，尊重网络服务提供者和内容创作者的权益.
+- 仓库内人工测试产物统一写到 `.tmp/test-output/`
+- 程序默认业务输出目录仍然是 `articles/`

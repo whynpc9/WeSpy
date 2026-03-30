@@ -1274,11 +1274,11 @@ def _run_fetch_cli(argv):
     parser = _create_parser(
         '获取文章内容并转换为Markdown',
         examples=[
-            'wespy "https://mp.weixin.qq.com/s/xxxxx"',
-            'wespy "https://mp.weixin.qq.com/s/xxxxx" --pdf',
-            'wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only --max-articles 20',
-            'wespy "https://example.com/article" --output-json',
-            'wespy --interactive',
+            'wespy-plus "https://mp.weixin.qq.com/s/xxxxx"',
+            'wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --pdf',
+            'wespy-plus "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only --max-articles 20',
+            'wespy-plus "https://example.com/article" --output-json',
+            'wespy-plus --interactive',
         ],
     )
     parser.add_argument('url', nargs='?', help='文章URL')
@@ -1342,7 +1342,7 @@ def _run_fetch_cli(argv):
 
     else:
         if not args.url:
-            parser.error("缺少文章 URL。示例: wespy \"https://mp.weixin.qq.com/s/xxxxx\"")
+            parser.error("缺少文章 URL。示例: wespy-plus \"https://mp.weixin.qq.com/s/xxxxx\"")
         url = args.url
         output_dir = args.output
         
@@ -1544,11 +1544,11 @@ def _build_subscription_parser():
     parser = _create_parser(
         '微信公众号订阅与批量正文下载',
         examples=[
-            'wespy auth login',
-            'wespy subscribe "人民日报"',
-            'wespy sync "人民日报"',
-            'wespy download-account "人民日报" --limit 1 --pdf',
-            'wespy sync --all --output-json',
+            'wespy-plus auth login',
+            'wespy-plus subscribe "人民日报"',
+            'wespy-plus sync "人民日报"',
+            'wespy-plus download-account "人民日报" --limit 1 --pdf',
+            'wespy-plus sync --all --output-json',
         ],
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
@@ -1561,9 +1561,9 @@ def _build_subscription_parser():
         'auth',
         '管理公众号后台认证信息',
         examples=[
-            'wespy auth login',
-            'wespy auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
-            'wespy auth show',
+            'wespy-plus auth login',
+            'wespy-plus auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
+            'wespy-plus auth show',
         ],
     )
     auth_subparsers = auth_parser.add_subparsers(dest='auth_command', required=True)
@@ -1573,8 +1573,8 @@ def _build_subscription_parser():
         'set',
         '设置 token 和 cookie',
         examples=[
-            'wespy auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
-            'wespy auth set --token 123456 --cookie-file /tmp/mp-cookie.txt',
+            'wespy-plus auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
+            'wespy-plus auth set --token 123456 --cookie-file /tmp/mp-cookie.txt',
         ],
     )
     auth_set.add_argument('--token', required=True, help='公众号后台 token')
@@ -1587,8 +1587,8 @@ def _build_subscription_parser():
         'login',
         '扫码登录公众号后台并自动写入 SQLite',
         examples=[
-            'wespy auth login',
-            'wespy auth login --qr-output /tmp/wespy-login.png --timeout 180',
+            'wespy-plus auth login',
+            'wespy-plus auth login --qr-output /tmp/wespy-login.png --timeout 180',
         ],
     )
     auth_login.add_argument('--qr-output', help='二维码图片保存路径 (默认: ~/.wespy/login-qrcode.png)')
@@ -1600,7 +1600,7 @@ def _build_subscription_parser():
         auth_subparsers,
         'show',
         '查看当前认证信息状态',
-        examples=['wespy auth show', 'wespy auth show --output-json'],
+        examples=['wespy-plus auth show', 'wespy-plus auth show --output-json'],
     )
     auth_show.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
@@ -1608,7 +1608,7 @@ def _build_subscription_parser():
         auth_subparsers,
         'clear',
         '清除当前认证信息',
-        examples=['wespy auth clear', 'wespy auth clear --output-json'],
+        examples=['wespy-plus auth clear', 'wespy-plus auth clear --output-json'],
     )
     auth_clear.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
@@ -1617,9 +1617,9 @@ def _build_subscription_parser():
         'subscribe',
         '订阅指定公众号',
         examples=[
-            'wespy subscribe "人民日报"',
-            'wespy subscribe "https://mp.weixin.qq.com/s/xxxxx"',
-            'wespy subscribe "人民日报" --output-json',
+            'wespy-plus subscribe "人民日报"',
+            'wespy-plus subscribe "https://mp.weixin.qq.com/s/xxxxx"',
+            'wespy-plus subscribe "人民日报" --output-json',
         ],
     )
     subscribe_parser.add_argument('target', help='公众号名称关键词或公众号文章链接')
@@ -1629,7 +1629,7 @@ def _build_subscription_parser():
         subparsers,
         'subscriptions',
         '列出已订阅公众号',
-        examples=['wespy subscriptions', 'wespy subscriptions --output-json'],
+        examples=['wespy-plus subscriptions', 'wespy-plus subscriptions --output-json'],
     )
     subscriptions_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
@@ -1638,9 +1638,9 @@ def _build_subscription_parser():
         'sync',
         '同步订阅公众号的文章列表',
         examples=[
-            'wespy sync "人民日报"',
-            'wespy sync --all',
-            'wespy sync "人民日报" --dry-run --output-json',
+            'wespy-plus sync "人民日报"',
+            'wespy-plus sync --all',
+            'wespy-plus sync "人民日报" --dry-run --output-json',
         ],
     )
     sync_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
@@ -1654,9 +1654,9 @@ def _build_subscription_parser():
         'download-account',
         '批量下载公众号文章',
         examples=[
-            'wespy download-account "人民日报"',
-            'wespy download-account "人民日报" --limit 1 --pdf',
-            'wespy download-account --all-accounts --dry-run --output-json',
+            'wespy-plus download-account "人民日报"',
+            'wespy-plus download-account "人民日报" --limit 1 --pdf',
+            'wespy-plus download-account --all-accounts --dry-run --output-json',
         ],
     )
     download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
@@ -1678,9 +1678,9 @@ def _build_subscription_parser():
         'sync-and-download',
         '同步后下载未下载文章',
         examples=[
-            'wespy sync-and-download "人民日报"',
-            'wespy sync-and-download --all-accounts --limit 5 --pdf',
-            'wespy sync-and-download "人民日报" --dry-run --output-json',
+            'wespy-plus sync-and-download "人民日报"',
+            'wespy-plus sync-and-download --all-accounts --limit 5 --pdf',
+            'wespy-plus sync-and-download "人民日报" --dry-run --output-json',
         ],
     )
     sync_download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
@@ -1713,11 +1713,11 @@ def _resolve_account_targets(service, args):
     if getattr(args, 'all', False) or getattr(args, 'all_accounts', False):
         accounts = service.list_accounts()
         if not accounts:
-            raise RuntimeError("当前没有已订阅公众号。示例: wespy subscribe \"人民日报\"")
+            raise RuntimeError("当前没有已订阅公众号。示例: wespy-plus subscribe \"人民日报\"")
         return [account['fakeid'] for account in accounts]
     if getattr(args, 'account', None):
         return [args.account]
-    raise RuntimeError("请提供公众号名称/fakeid，或使用 --all/--all-accounts。示例: wespy download-account \"人民日报\"")
+    raise RuntimeError("请提供公众号名称/fakeid，或使用 --all/--all-accounts。示例: wespy-plus download-account \"人民日报\"")
 
 
 def _run_subscription_cli(argv):

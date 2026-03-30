@@ -642,8 +642,8 @@ class SubscriptionService:
         auth = self.store.get_auth()
         if not auth:
             raise RuntimeError(
-                "未配置公众号后台认证信息。请先执行 `wespy auth login`，"
-                "或使用 `wespy auth set --token ... --cookie ...` 手动配置。"
+                "未配置公众号后台认证信息。请先执行 `wespy-plus auth login`，"
+                "或使用 `wespy-plus auth set --token ... --cookie ...` 手动配置。"
             )
         return WeChatMPClient(auth["token"], auth["cookie"], verbose=self.verbose)
 

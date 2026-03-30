@@ -3,9 +3,9 @@ name: wespy-fetcher
 description: 获取并转换微信公众号/网页文章为 Markdown 的封装 Skill，完整支持 WeSpy 的单篇抓取、微信专辑批量下载、HTML/JSON/PDF/Markdown 多格式输出、公众号订阅同步与批量正文下载，以及调用 MinerU 对公众号图片做 OCR 并合并进 Markdown。Use when user asks to 抓取微信公众号文章、公众号专辑批量下载、URL 转 Markdown、保存微信文章、公众号订阅同步、公众号批量下载、公众号图片 OCR、网页导出 PDF、mp.weixin.qq.com to markdown.
 ---
 
-# WeSpy Fetcher
+# wespy-plus Fetcher
 
-封装当前 fork 仓库 [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy) 的完整能力。
+封装当前 fork 仓库 [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy) 中的 `wespy-plus` 能力。
 
 ## 功能范围
 
