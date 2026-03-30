@@ -8,12 +8,14 @@
 import os
 import sys
 import re
+import io
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup, Comment
 import time
 import json
 import argparse
+from contextlib import redirect_stdout
 from wespy.juejin import JuejinFetcher
 from wespy.ocr import MinerUOCRClient
 from wespy.pdf_export import AgentBrowserPDFExporter
@@ -1185,6 +1187,78 @@ def _build_fetcher(enable_image_ocr=False, mineru_url=None, verbose=False):
     )
 
 
+class HelpFormatter(argparse.RawTextHelpFormatter):
+    pass
+
+
+def _examples_text(examples):
+    if not examples:
+        return None
+    return "Examples:\n" + "\n".join(f"  {example}" for example in examples)
+
+
+def _create_parser(description, examples=None):
+    return argparse.ArgumentParser(
+        description=description,
+        epilog=_examples_text(examples),
+        formatter_class=HelpFormatter,
+    )
+
+
+def _create_subparser(subparsers, name, help_text, description=None, examples=None):
+    return subparsers.add_parser(
+        name,
+        help=help_text,
+        description=description or help_text,
+        epilog=_examples_text(examples),
+        formatter_class=HelpFormatter,
+    )
+
+
+def _maybe_run_quietly(output_json, verbose, func, *args, **kwargs):
+    if output_json and not verbose:
+        with redirect_stdout(io.StringIO()):
+            return func(*args, **kwargs)
+    return func(*args, **kwargs)
+
+
+def _print_json(payload):
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _wants_json_output(argv):
+    return '--output-json' in (argv or [])
+
+
+def fetcher_is_album_url(url):
+    return 'mp.weixin.qq.com/mp/appmsgalbum' in (url or '')
+
+
+def _count_candidate_articles(store, fakeid, only_undownloaded=True, limit=None):
+    return len(store.list_articles(fakeid, only_undownloaded=only_undownloaded, limit=limit))
+
+
+def _build_download_dry_run(service, args):
+    targets = _resolve_account_targets(service, args)
+    items = []
+    for identifier in targets:
+        account = service.store.get_account(identifier)
+        candidate_count = _count_candidate_articles(
+            service.store,
+            account['fakeid'],
+            only_undownloaded=not getattr(args, 'all_articles', False),
+            limit=args.limit,
+        )
+        items.append(
+            {
+                'fakeid': account['fakeid'],
+                'nickname': account['nickname'],
+                'candidate_articles': candidate_count,
+            }
+        )
+    return items
+
+
 def _apply_output_flags(args):
     if getattr(args, 'all', False) or getattr(args, 'all_formats', False):
         return True, True, True, True
@@ -1197,10 +1271,22 @@ def _apply_output_flags(args):
 
 
 def _run_fetch_cli(argv):
-    parser = argparse.ArgumentParser(description='获取文章内容并转换为Markdown')
+    parser = _create_parser(
+        '获取文章内容并转换为Markdown',
+        examples=[
+            'wespy "https://mp.weixin.qq.com/s/xxxxx"',
+            'wespy "https://mp.weixin.qq.com/s/xxxxx" --pdf',
+            'wespy "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --album-only --max-articles 20',
+            'wespy "https://example.com/article" --output-json',
+            'wespy --interactive',
+        ],
+    )
     parser.add_argument('url', nargs='?', help='文章URL')
     parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
+    parser.add_argument('--interactive', action='store_true', help='显式进入交互模式')
+    parser.add_argument('--dry-run', action='store_true', help='仅输出执行计划，不发起网络请求也不写入文件')
+    parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果，便于 agent 或脚本消费')
     parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
     parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
     parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件 (依赖 agent-browser)')
@@ -1212,8 +1298,8 @@ def _run_fetch_cli(argv):
     
     args = parser.parse_args(argv)
     
-    # 如果没有提供URL，进入交互模式
-    if not args.url:
+    # 只有显式指定时才进入交互模式，避免 agent 误入提示流程
+    if args.interactive:
         print("文章获取工具")
         print("=" * 40)
         url = input("请输入文章URL: ").strip()
@@ -1255,6 +1341,8 @@ def _run_fetch_cli(argv):
         mineru_url = None
 
     else:
+        if not args.url:
+            parser.error("缺少文章 URL。示例: wespy \"https://mp.weixin.qq.com/s/xxxxx\"")
         url = args.url
         output_dir = args.output
         
@@ -1275,6 +1363,37 @@ def _run_fetch_cli(argv):
         image_ocr = args.image_ocr
         mineru_url = args.mineru_url
 
+    if args.dry_run:
+        mode = 'album-list' if fetcher_is_album_url(url) and album_only else 'album-download' if fetcher_is_album_url(url) else 'article'
+        payload = {
+            'ok': True,
+            'dry_run': True,
+            'mode': mode,
+            'url': url,
+            'output_dir': output_dir,
+            'options': {
+                'save_html': save_html,
+                'save_json': save_json,
+                'save_pdf': save_pdf,
+                'save_markdown': save_markdown,
+                'max_articles': max_articles,
+                'album_only': album_only,
+                'image_ocr': image_ocr,
+                'mineru_url': mineru_url or os.environ.get('WESPY_MINERU_URL'),
+            },
+        }
+        if args.output_json:
+            _print_json(payload)
+        else:
+            print("Dry run:")
+            print(f"模式: {mode}")
+            print(f"URL: {url}")
+            print(f"输出目录: {output_dir}")
+            print(
+                f"输出格式: HTML={save_html}, JSON={save_json}, PDF={save_pdf}, Markdown={save_markdown}"
+            )
+        return
+
     if args.verbose:
         print(f"URL: {url}")
         print(f"输出目录: {output_dir}")
@@ -1293,91 +1412,259 @@ def _run_fetch_cli(argv):
     if fetcher.album_fetcher.is_album_url(url):
         if album_only:
             # 仅获取专辑文章列表
-            print("仅获取专辑文章列表...")
-            articles = fetcher.album_fetcher.fetch_album_articles(url, max_articles)
+            if not args.output_json:
+                print("仅获取专辑文章列表...")
+            articles = _maybe_run_quietly(
+                args.output_json,
+                args.verbose,
+                fetcher.album_fetcher.fetch_album_articles,
+                url,
+                max_articles,
+            )
             if articles:
-                print(f"\n获取到 {len(articles)} 篇文章:")
-                for i, article in enumerate(articles, 1):
-                    print(f"{i:2d}. {article['title']}")
-                    print(f"     URL: {article['url']}")
-                    print(f"     时间: {article.get('create_time', 'N/A')}")
-                    if i < len(articles):
-                        print()
-
                 # 保存文章列表到文件
                 list_file = os.path.join(output_dir, f"album_articles_{int(time.time())}.json")
                 os.makedirs(output_dir, exist_ok=True)
                 with open(list_file, 'w', encoding='utf-8') as f:
                     json.dump(articles, f, ensure_ascii=False, indent=2)
-                print(f"\n文章列表已保存到: {list_file}")
+                if args.output_json:
+                    _print_json({
+                        'ok': True,
+                        'mode': 'album-list',
+                        'count': len(articles),
+                        'list_file': list_file,
+                        'articles': articles,
+                    })
+                else:
+                    print(f"\n获取到 {len(articles)} 篇文章:")
+                    for i, article in enumerate(articles, 1):
+                        print(f"{i:2d}. {article['title']}")
+                        print(f"     URL: {article['url']}")
+                        print(f"     时间: {article.get('create_time', 'N/A')}")
+                        if i < len(articles):
+                            print()
+                    print(f"\n文章列表已保存到: {list_file}")
             else:
-                print("未获取到任何文章")
+                if args.output_json:
+                    _print_json({'ok': False, 'mode': 'album-list', 'error': '未获取到任何文章'})
+                else:
+                    print("未获取到任何文章")
                 sys.exit(1)
         else:
             # 批量下载专辑文章
-            result = fetcher.fetch_album_articles(url, output_dir, max_articles, save_html, save_json, save_markdown, save_pdf)
+            result = _maybe_run_quietly(
+                args.output_json,
+                args.verbose,
+                fetcher.fetch_album_articles,
+                url,
+                output_dir,
+                max_articles,
+                save_html,
+                save_json,
+                save_markdown,
+                save_pdf,
+            )
             if result:
-                print(f"\n批量下载完成!")
-                print(f"成功下载: {len(result)} 篇文章")
+                if args.output_json:
+                    _print_json({
+                        'ok': True,
+                        'mode': 'album-download',
+                        'downloaded_count': len(result),
+                        'output_dir': output_dir,
+                    })
+                else:
+                    print(f"\n批量下载完成!")
+                    print(f"成功下载: {len(result)} 篇文章")
             else:
-                print("专辑文章下载失败!")
+                if args.output_json:
+                    _print_json({'ok': False, 'mode': 'album-download', 'error': '专辑文章下载失败'})
+                else:
+                    print("专辑文章下载失败!")
                 sys.exit(1)
     else:
         # 单篇文章处理
-        result = fetcher.fetch_article(url, output_dir, save_html, save_json, save_markdown, save_pdf)
+        result = _maybe_run_quietly(
+            args.output_json,
+            args.verbose,
+            fetcher.fetch_article,
+            url,
+            output_dir,
+            save_html,
+            save_json,
+            save_markdown,
+            save_pdf,
+        )
 
         if result and result.get('fetch_status') == 'unavailable':
-            print("\n文章不可用，已跳过保存。")
-            print(f"原因: {result.get('unavailable_reason') or '页面不可访问'}")
+            if args.output_json:
+                _print_json({
+                    'ok': False,
+                    'mode': 'article',
+                    'status': 'unavailable',
+                    'url': url,
+                    'reason': result.get('unavailable_reason') or '页面不可访问',
+                })
+            else:
+                print("\n文章不可用，已跳过保存。")
+                print(f"原因: {result.get('unavailable_reason') or '页面不可访问'}")
             sys.exit(1)
         elif result:
-            print(f"\n成功获取文章!")
-            print(f"标题: {result['title']}")
-            print(f"作者: {result['author']}")
-            print(f"发布时间: {result['publish_time']}")
+            if args.output_json:
+                _print_json({
+                    'ok': True,
+                    'mode': 'article',
+                    'article': {
+                        'title': result['title'],
+                        'author': result['author'],
+                        'publish_time': result['publish_time'],
+                        'url': result['url'],
+                    },
+                    'output_dir': output_dir,
+                    'formats': {
+                        'markdown': save_markdown,
+                        'html': save_html,
+                        'json': save_json,
+                        'pdf': save_pdf,
+                    },
+                })
+            else:
+                print(f"\n成功获取文章!")
+                print(f"标题: {result['title']}")
+                print(f"作者: {result['author']}")
+                print(f"发布时间: {result['publish_time']}")
         else:
-            print("文章获取失败!")
+            if args.output_json:
+                _print_json({'ok': False, 'mode': 'article', 'error': '文章获取失败'})
+            else:
+                print("文章获取失败!")
             sys.exit(1)
 
 
 def _build_subscription_parser():
-    parser = argparse.ArgumentParser(description='微信公众号订阅与批量 Markdown 下载')
+    parser = _create_parser(
+        '微信公众号订阅与批量正文下载',
+        examples=[
+            'wespy auth login',
+            'wespy subscribe "人民日报"',
+            'wespy sync "人民日报"',
+            'wespy download-account "人民日报" --limit 1 --pdf',
+            'wespy sync --all --output-json',
+        ],
+    )
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
     parser.add_argument('--db-path', help='SQLite 数据库路径 (默认: ~/.wespy/wespy.db)')
 
     subparsers = parser.add_subparsers(dest='command', required=True)
 
-    auth_parser = subparsers.add_parser('auth', help='管理公众号后台认证信息')
+    auth_parser = _create_subparser(
+        subparsers,
+        'auth',
+        '管理公众号后台认证信息',
+        examples=[
+            'wespy auth login',
+            'wespy auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
+            'wespy auth show',
+        ],
+    )
     auth_subparsers = auth_parser.add_subparsers(dest='auth_command', required=True)
 
-    auth_set = auth_subparsers.add_parser('set', help='设置 token 和 cookie')
+    auth_set = _create_subparser(
+        auth_subparsers,
+        'set',
+        '设置 token 和 cookie',
+        examples=[
+            'wespy auth set --token 123456 --cookie "pass_ticket=...; wap_sid2=...; ..."',
+            'wespy auth set --token 123456 --cookie-file /tmp/mp-cookie.txt',
+        ],
+    )
     auth_set.add_argument('--token', required=True, help='公众号后台 token')
     auth_set.add_argument('--cookie', help='完整 Cookie 字符串')
     auth_set.add_argument('--cookie-file', help='从文件读取 Cookie 字符串')
+    auth_set.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    auth_login = auth_subparsers.add_parser('login', help='扫码登录公众号后台并自动写入 SQLite')
+    auth_login = _create_subparser(
+        auth_subparsers,
+        'login',
+        '扫码登录公众号后台并自动写入 SQLite',
+        examples=[
+            'wespy auth login',
+            'wespy auth login --qr-output /tmp/wespy-login.png --timeout 180',
+        ],
+    )
     auth_login.add_argument('--qr-output', help='二维码图片保存路径 (默认: ~/.wespy/login-qrcode.png)')
     auth_login.add_argument('--timeout', type=int, default=180, help='扫码登录超时时间，单位秒 (默认: 180)')
     auth_login.add_argument('--poll-interval', type=int, default=2, help='轮询间隔，单位秒 (默认: 2)')
+    auth_login.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    auth_subparsers.add_parser('show', help='查看当前认证信息状态')
-    auth_subparsers.add_parser('clear', help='清除当前认证信息')
+    auth_show = _create_subparser(
+        auth_subparsers,
+        'show',
+        '查看当前认证信息状态',
+        examples=['wespy auth show', 'wespy auth show --output-json'],
+    )
+    auth_show.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    subscribe_parser = subparsers.add_parser('subscribe', help='订阅指定公众号')
+    auth_clear = _create_subparser(
+        auth_subparsers,
+        'clear',
+        '清除当前认证信息',
+        examples=['wespy auth clear', 'wespy auth clear --output-json'],
+    )
+    auth_clear.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
+    subscribe_parser = _create_subparser(
+        subparsers,
+        'subscribe',
+        '订阅指定公众号',
+        examples=[
+            'wespy subscribe "人民日报"',
+            'wespy subscribe "https://mp.weixin.qq.com/s/xxxxx"',
+            'wespy subscribe "人民日报" --output-json',
+        ],
+    )
     subscribe_parser.add_argument('target', help='公众号名称关键词或公众号文章链接')
+    subscribe_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    subparsers.add_parser('subscriptions', help='列出已订阅公众号')
+    subscriptions_parser = _create_subparser(
+        subparsers,
+        'subscriptions',
+        '列出已订阅公众号',
+        examples=['wespy subscriptions', 'wespy subscriptions --output-json'],
+    )
+    subscriptions_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    sync_parser = subparsers.add_parser('sync', help='同步订阅公众号的文章列表')
+    sync_parser = _create_subparser(
+        subparsers,
+        'sync',
+        '同步订阅公众号的文章列表',
+        examples=[
+            'wespy sync "人民日报"',
+            'wespy sync --all',
+            'wespy sync "人民日报" --dry-run --output-json',
+        ],
+    )
     sync_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
     sync_parser.add_argument('--all', action='store_true', help='同步全部已订阅公众号')
     sync_parser.add_argument('--max-pages', type=int, help='限制单个公众号最多同步页数')
+    sync_parser.add_argument('--dry-run', action='store_true', help='仅输出同步计划，不发起实际同步')
+    sync_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
-    download_parser = subparsers.add_parser('download-account', help='批量下载公众号文章为 Markdown')
+    download_parser = _create_subparser(
+        subparsers,
+        'download-account',
+        '批量下载公众号文章',
+        examples=[
+            'wespy download-account "人民日报"',
+            'wespy download-account "人民日报" --limit 1 --pdf',
+            'wespy download-account --all-accounts --dry-run --output-json',
+        ],
+    )
     download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
     download_parser.add_argument('--all-accounts', action='store_true', help='下载全部已订阅公众号')
     download_parser.add_argument('--all-articles', action='store_true', help='包含已下载文章，默认仅下载未下载文章')
     download_parser.add_argument('--limit', type=int, help='限制下载文章数量')
+    download_parser.add_argument('--dry-run', action='store_true', help='仅输出下载计划，不发起下载')
+    download_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
     download_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
     download_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
     download_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
@@ -1386,11 +1673,22 @@ def _build_subscription_parser():
     download_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
     download_parser.add_argument('--mineru-url', help='MinerU 服务地址')
 
-    sync_download_parser = subparsers.add_parser('sync-and-download', help='同步后下载未下载文章')
+    sync_download_parser = _create_subparser(
+        subparsers,
+        'sync-and-download',
+        '同步后下载未下载文章',
+        examples=[
+            'wespy sync-and-download "人民日报"',
+            'wespy sync-and-download --all-accounts --limit 5 --pdf',
+            'wespy sync-and-download "人民日报" --dry-run --output-json',
+        ],
+    )
     sync_download_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
     sync_download_parser.add_argument('--all-accounts', action='store_true', help='同步并下载全部已订阅公众号')
     sync_download_parser.add_argument('--max-pages', type=int, help='限制单个公众号最多同步页数')
     sync_download_parser.add_argument('--limit', type=int, help='限制下载文章数量')
+    sync_download_parser.add_argument('--dry-run', action='store_true', help='仅输出执行计划，不发起同步或下载')
+    sync_download_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
     sync_download_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
     sync_download_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
     sync_download_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
@@ -1415,16 +1713,17 @@ def _resolve_account_targets(service, args):
     if getattr(args, 'all', False) or getattr(args, 'all_accounts', False):
         accounts = service.list_accounts()
         if not accounts:
-            raise RuntimeError("当前没有已订阅公众号")
+            raise RuntimeError("当前没有已订阅公众号。示例: wespy subscribe \"人民日报\"")
         return [account['fakeid'] for account in accounts]
     if getattr(args, 'account', None):
         return [args.account]
-    raise RuntimeError("请提供公众号名称/fakeid，或使用 --all")
+    raise RuntimeError("请提供公众号名称/fakeid，或使用 --all/--all-accounts。示例: wespy download-account \"人民日报\"")
 
 
 def _run_subscription_cli(argv):
     parser = _build_subscription_parser()
     args = parser.parse_args(argv)
+    output_json = getattr(args, 'output_json', False)
 
     store = SubscriptionStore(db_path=args.db_path)
     service = SubscriptionService(store, verbose=args.verbose)
@@ -1433,7 +1732,10 @@ def _run_subscription_cli(argv):
         if args.auth_command == 'set':
             cookie = _resolve_cookie_value(args)
             service.set_auth(args.token, cookie)
-            print(f"已保存公众号后台认证信息到: {store.db_path}")
+            if output_json:
+                _print_json({'ok': True, 'command': 'auth.set', 'db_path': store.db_path})
+            else:
+                print(f"已保存公众号后台认证信息到: {store.db_path}")
             return
         if args.auth_command == 'login':
             result = service.login_via_qrcode(
@@ -1441,75 +1743,200 @@ def _run_subscription_cli(argv):
                 timeout=args.timeout,
                 poll_interval=args.poll_interval,
             )
-            print("扫码登录成功")
-            if result.get('nickname'):
-                print(f"公众号: {result['nickname']}")
-            print(f"token: {result['token']}")
-            print(f"二维码文件: {result['qr_path']}")
-            print(f"数据库: {store.db_path}")
+            if output_json:
+                _print_json({
+                    'ok': True,
+                    'command': 'auth.login',
+                    'db_path': store.db_path,
+                    'token': result['token'],
+                    'nickname': result.get('nickname'),
+                    'qr_path': result['qr_path'],
+                })
+            else:
+                print("扫码登录成功")
+                if result.get('nickname'):
+                    print(f"公众号: {result['nickname']}")
+                print(f"token: {result['token']}")
+                print(f"二维码文件: {result['qr_path']}")
+                print(f"数据库: {store.db_path}")
             return
         if args.auth_command == 'show':
             auth = service.get_auth()
             if not auth:
-                print(f"未配置认证信息: {store.db_path}")
+                if output_json:
+                    _print_json({'ok': True, 'command': 'auth.show', 'configured': False, 'db_path': store.db_path})
+                else:
+                    print(f"未配置认证信息: {store.db_path}")
                 return
-            print(f"数据库: {store.db_path}")
-            print(f"token: {auth['token']}")
-            print(f"cookie长度: {len(auth['cookie'])}")
-            print(f"更新时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(auth['updated_at']))}")
+            payload = {
+                'ok': True,
+                'command': 'auth.show',
+                'configured': True,
+                'db_path': store.db_path,
+                'token': auth['token'],
+                'cookie_length': len(auth['cookie']),
+                'updated_at': auth['updated_at'],
+                'updated_at_text': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(auth['updated_at'])),
+            }
+            if output_json:
+                _print_json(payload)
+            else:
+                print(f"数据库: {store.db_path}")
+                print(f"token: {auth['token']}")
+                print(f"cookie长度: {len(auth['cookie'])}")
+                print(f"更新时间: {payload['updated_at_text']}")
             return
         if args.auth_command == 'clear':
             service.clear_auth()
-            print("已清除公众号后台认证信息")
+            if output_json:
+                _print_json({'ok': True, 'command': 'auth.clear', 'db_path': store.db_path})
+            else:
+                print("已清除公众号后台认证信息")
             return
 
     if args.command == 'subscribe':
-        account, resolved_query = service.subscribe(args.target)
-        print(f"已订阅公众号: {account['nickname']}")
-        print(f"fakeid: {account['fakeid']}")
-        if resolved_query != args.target:
-            print(f"解析目标: {resolved_query}")
+        account, resolved_query = _maybe_run_quietly(
+            output_json,
+            args.verbose,
+            service.subscribe,
+            args.target,
+        )
+        payload = {
+            'ok': True,
+            'command': 'subscribe',
+            'account': account,
+            'resolved_query': resolved_query,
+        }
+        if output_json:
+            _print_json(payload)
+        else:
+            print(f"已订阅公众号: {account['nickname']}")
+            print(f"fakeid: {account['fakeid']}")
+            if resolved_query != args.target:
+                print(f"解析目标: {resolved_query}")
         return
 
     if args.command == 'subscriptions':
         accounts = service.list_accounts()
         if not accounts:
-            print("当前没有已订阅公众号")
+            if output_json:
+                _print_json({'ok': True, 'command': 'subscriptions', 'accounts': []})
+            else:
+                print("当前没有已订阅公众号")
             return
-        for account in accounts:
-            print(f"- {account['nickname']} ({account['fakeid']})")
-            print(f"  已同步文章: {account.get('article_count', 0)}")
-            print(f"  待下载文章: {account.get('pending_count', 0) or 0}")
+        if output_json:
+            _print_json({'ok': True, 'command': 'subscriptions', 'accounts': accounts})
+        else:
+            for account in accounts:
+                print(f"- {account['nickname']} ({account['fakeid']})")
+                print(f"  已同步文章: {account.get('article_count', 0)}")
+                print(f"  待下载文章: {account.get('pending_count', 0) or 0}")
         return
 
     if args.command == 'sync':
+        targets = _resolve_account_targets(service, args)
+        if getattr(args, 'dry_run', False):
+            payload = {
+                'ok': True,
+                'command': 'sync',
+                'dry_run': True,
+                'targets': [service.store.get_account(identifier) for identifier in targets],
+                'max_pages': args.max_pages,
+            }
+            if output_json:
+                _print_json(payload)
+            else:
+                print("Dry run:")
+                print(f"待同步公众号数: {len(payload['targets'])}")
+                print(f"max_pages: {args.max_pages or 'all'}")
+                for account in payload['targets']:
+                    print(f"- {account['nickname']} ({account['fakeid']})")
+            return
+
+        results = []
         for identifier in _resolve_account_targets(service, args):
-            result = service.sync_account(identifier, max_pages=args.max_pages)
-            account = result['account']
-            print(f"已同步公众号: {account['nickname']} ({account['fakeid']})")
-            print(
-                f"页数: {result['pages']}, 新增文章: {result['new_articles']}, "
-                f"更新文章: {result['updated_articles']}, 本次扫描: {result['synced_articles']}"
+            result = _maybe_run_quietly(
+                output_json,
+                args.verbose,
+                service.sync_account,
+                identifier,
+                max_pages=args.max_pages,
             )
+            results.append(result)
+            account = result['account']
+            if not output_json:
+                print(f"已同步公众号: {account['nickname']} ({account['fakeid']})")
+                print(
+                    f"页数: {result['pages']}, 新增文章: {result['new_articles']}, "
+                    f"更新文章: {result['updated_articles']}, 本次扫描: {result['synced_articles']}"
+                )
+        if output_json:
+            _print_json({'ok': True, 'command': 'sync', 'results': results})
         return
 
     if args.command in ('download-account', 'sync-and-download'):
         save_html, save_json, save_pdf, save_markdown = _apply_output_flags(args)
+        targets = _resolve_account_targets(service, args)
+        if getattr(args, 'dry_run', False):
+            payload = {
+                'ok': True,
+                'command': args.command,
+                'dry_run': True,
+                'sync_first': args.command == 'sync-and-download',
+                'targets': _build_download_dry_run(service, args),
+                'output_dir': args.output,
+                'formats': {
+                    'markdown': save_markdown,
+                    'html': save_html,
+                    'json': save_json,
+                    'pdf': save_pdf,
+                },
+                'limit': args.limit,
+                'max_pages': getattr(args, 'max_pages', None),
+            }
+            if output_json:
+                _print_json(payload)
+            else:
+                print("Dry run:")
+                print(f"命令: {args.command}")
+                print(f"输出目录: {args.output}")
+                print(
+                    f"输出格式: HTML={save_html}, JSON={save_json}, PDF={save_pdf}, Markdown={save_markdown}"
+                )
+                for item in payload['targets']:
+                    print(
+                        f"- {item['nickname']} ({item['fakeid']}), 待处理文章: {item['candidate_articles']}"
+                    )
+            return
+
         fetcher = _build_fetcher(
             enable_image_ocr=getattr(args, 'image_ocr', False),
             mineru_url=getattr(args, 'mineru_url', None),
             verbose=args.verbose,
         )
 
-        for identifier in _resolve_account_targets(service, args):
+        results = []
+        for identifier in targets:
             if args.command == 'sync-and-download':
-                sync_result = service.sync_account(identifier, max_pages=args.max_pages)
-                print(
-                    f"已同步公众号: {sync_result['account']['nickname']} ({sync_result['account']['fakeid']}), "
-                    f"新增文章: {sync_result['new_articles']}"
+                sync_result = _maybe_run_quietly(
+                    output_json,
+                    args.verbose,
+                    service.sync_account,
+                    identifier,
+                    max_pages=args.max_pages,
                 )
+                if not output_json:
+                    print(
+                        f"已同步公众号: {sync_result['account']['nickname']} ({sync_result['account']['fakeid']}), "
+                        f"新增文章: {sync_result['new_articles']}"
+                    )
+            else:
+                sync_result = None
 
-            result = service.download_account(
+            result = _maybe_run_quietly(
+                output_json,
+                args.verbose,
+                service.download_account,
                 identifier,
                 fetcher,
                 output_root=args.output,
@@ -1520,13 +1947,20 @@ def _run_subscription_cli(argv):
                 save_markdown=save_markdown,
                 save_pdf=save_pdf,
             )
-            print(
-                f"下载完成: {result['account']['nickname']} "
-                f"成功 {result['success']} / 总计 {result['total']} / "
-                f"不可用 {result.get('unavailable', 0)} / 失败 {result['failed']}"
-            )
-            if result['output_dir']:
-                print(f"输出目录: {result['output_dir']}")
+            results.append({
+                'sync': sync_result,
+                'download': result,
+            })
+            if not output_json:
+                print(
+                    f"下载完成: {result['account']['nickname']} "
+                    f"成功 {result['success']} / 总计 {result['total']} / "
+                    f"不可用 {result.get('unavailable', 0)} / 失败 {result['failed']}"
+                )
+                if result['output_dir']:
+                    print(f"输出目录: {result['output_dir']}")
+        if output_json:
+            _print_json({'ok': True, 'command': args.command, 'results': results})
         return
 
 
@@ -1539,10 +1973,16 @@ def main(argv=None):
         else:
             _run_fetch_cli(argv)
     except RuntimeError as e:
-        print(f"错误: {e}")
+        if _wants_json_output(argv):
+            _print_json({'ok': False, 'error': str(e)})
+        else:
+            print(f"错误: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("已中断")
+        if _wants_json_output(argv):
+            _print_json({'ok': False, 'error': '已中断'})
+        else:
+            print("已中断")
         sys.exit(1)
 
 if __name__ == "__main__":

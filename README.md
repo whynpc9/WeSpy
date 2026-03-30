@@ -67,6 +67,16 @@ pip install -e .
 - 没有 MinerU 服务时，不要使用 `--image-ocr`
 - 没有公众号后台登录态时，不要使用 `subscribe` / `sync` / `download-account`
 
+## Agent 友好 CLI 约定
+
+为了更适合 agent、终端脚本和自动化调用，当前 CLI 约定是：
+
+- 非交互优先：常规抓取必须显式传入 URL
+- 交互模式显式启用：使用 `wespy --interactive`
+- 计划预览：使用 `--dry-run`
+- 结构化输出：使用 `--output-json`
+- 批量任务建议先用 `--limit 1` 做 smoke test，再放大范围
+
 ## 可选依赖配置
 
 基础能力只需要安装 Python 依赖：
@@ -122,6 +132,12 @@ wespy auth set --token 123456789 --cookie "pass_ticket=...; wap_sid2=...; ..."
 # 获取wx公众号文章（默认只输出 Markdown）
 wespy "https://mp.weixin.qq.com/s/xxxxx"
 
+# 输出结构化 JSON，便于 agent 或脚本消费
+wespy "https://mp.weixin.qq.com/s/xxxxx" --output-json
+
+# 只预览执行计划，不发起抓取
+wespy "https://mp.weixin.qq.com/s/xxxxx" --dry-run
+
 # 指定输出目录
 wespy "https://mp.weixin.qq.com/s/xxxxx" -o /path/to/output
 
@@ -139,6 +155,9 @@ wespy "https://example.com/article" --all
 
 # 对公众号图片启用 OCR，并把结果合并进 Markdown
 wespy "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mineru-url http://172.16.3.132:8523
+
+# 显式进入交互模式
+wespy --interactive
 
 # 显示详细信息
 wespy "https://example.com/article" -v
@@ -186,6 +205,9 @@ wespy subscriptions
 # 同步指定公众号的文章列表
 wespy sync "人民日报"
 
+# 仅预览同步计划，输出 JSON
+wespy sync "人民日报" --dry-run --output-json
+
 # 同步全部已订阅公众号
 wespy sync --all
 
@@ -194,6 +216,9 @@ wespy download-account "人民日报"
 
 # 下载该公众号尚未下载的文章，并同时导出 PDF
 wespy download-account "人民日报" --pdf
+
+# 先做小批量 smoke test
+wespy download-account "人民日报" --limit 1 --pdf --dry-run --output-json
 
 # 同步后立即下载新增文章
 wespy sync-and-download "人民日报"
@@ -207,10 +232,10 @@ wespy --db-path /path/to/wespy.db subscriptions
 
 ### 交互式使用
 
-如果不提供任何参数，程序会进入交互模式：
+如果需要交互模式，请显式传入 `--interactive`：
 
 ```bash
-wespy
+wespy --interactive
 ```
 
 然后根据提示输入文章 URL、输出目录和输出格式选择：
@@ -361,7 +386,7 @@ WeSpy 使用智能算法尝试从以下元素中提取内容：
 ## 命令行选项
 
 ```
-wespy [-h] [-o OUTPUT] [-v] [--html] [--json] [--pdf] [--all] [--max-articles MAX_ARTICLES] [--album-only] url
+wespy [-h] [-o OUTPUT] [-v] [--interactive] [--dry-run] [--output-json] [--html] [--json] [--pdf] [--all] [--max-articles MAX_ARTICLES] [--album-only] [--image-ocr] [--mineru-url MINERU_URL] [url]
 
 获取文章内容并转换为Markdown，支持微信专辑批量下载
 
@@ -373,6 +398,9 @@ optional arguments:
   -o OUTPUT, --output OUTPUT
                         输出目录 (默认: articles)
   -v, --verbose         显示详细信息
+  --interactive         显式进入交互模式
+  --dry-run             仅输出执行计划，不发起网络请求也不写入文件
+  --output-json         以 JSON 输出结果，便于 agent 或脚本消费
   --html                同时保存HTML文件
   --json                同时保存JSON信息文件
   --pdf                 同时保存PDF文件 (依赖 agent-browser)
@@ -402,12 +430,13 @@ wespy subscriptions
 
 wespy sync <account>
 wespy sync --all
+wespy sync <account> [--dry-run] [--output-json]
 
-wespy download-account <account> [-o OUTPUT] [--limit N] [--all-articles]
-wespy download-account --all-accounts
+wespy download-account <account> [-o OUTPUT] [--limit N] [--all-articles] [--dry-run] [--output-json]
+wespy download-account --all-accounts [--dry-run] [--output-json]
 
-wespy sync-and-download <account> [-o OUTPUT] [--limit N]
-wespy sync-and-download --all-accounts
+wespy sync-and-download <account> [-o OUTPUT] [--limit N] [--dry-run] [--output-json]
+wespy sync-and-download --all-accounts [--dry-run] [--output-json]
 ```
 
 ### 输出格式选项说明

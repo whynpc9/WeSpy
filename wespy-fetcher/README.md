@@ -1,7 +1,7 @@
 # WeSpy Fetcher Skill
 
 > 仓库地址: https://github.com/whynpc9/WeSpy
-> 版本: v1.4.1
+> 版本: v1.5.0
 
 把当前 fork 的 [whynpc9/WeSpy](https://github.com/whynpc9/WeSpy) 封装成可直接调用的 Skill，支持微信公众号文章抓取、专辑批量下载、URL 转 Markdown 等完整能力。
 
@@ -23,7 +23,9 @@
 - 可选导出浏览器渲染后的 PDF（`--pdf`，依赖 `agent-browser`）
 - 可选对公众号图片调用 MinerU OCR，并把结果以引用块合并进 Markdown
 - 可选 HTML / JSON / 全格式输出（`--html` / `--json` / `--all`）
-- 兼容交互模式（不传 URL）
+- 支持显式交互模式（`--interactive`）
+- 支持 `--dry-run` 预览执行计划
+- 支持 `--output-json` 返回结构化结果
 
 ## 最小可用模式
 
@@ -35,6 +37,13 @@
 
 这些能力不依赖 `agent-browser`、MinerU 或公众号后台登录态。
 
+## Agent 使用建议
+
+- 默认走非交互命令，不要依赖提示输入
+- 批量任务先执行 `--limit 1 --dry-run --output-json`
+- 在确认依赖存在前，不要主动加 `--pdf` 或 `--image-ocr`
+- 如果只需要程序消费结果，优先使用 `--output-json`
+
 ## 快速开始
 
 ```bash
@@ -43,6 +52,12 @@ python3 scripts/wespy_cli.py --help
 
 # 公众号文章转 Markdown
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx"
+
+# 输出结构化 JSON
+python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --output-json
+
+# 只预览执行计划
+python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --dry-run
 
 # 扫码登录公众号后台并写入 SQLite
 python3 scripts/wespy_cli.py auth login
@@ -60,6 +75,9 @@ python3 scripts/wespy_cli.py download-account "人民日报"
 # 下载该公众号文章，并同时导出 PDF
 python3 scripts/wespy_cli.py download-account "人民日报" --pdf
 
+# 批量任务先做 smoke test
+python3 scripts/wespy_cli.py download-account "人民日报" --limit 1 --dry-run --output-json
+
 # 导出浏览器渲染 PDF
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --pdf
 
@@ -68,6 +86,9 @@ python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --image-ocr --mi
 
 # 专辑批量下载
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&album_id=..." --max-articles 10 --all
+
+# 显式进入交互模式
+python3 scripts/wespy_cli.py --interactive
 ```
 
 ## 路径约定

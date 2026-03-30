@@ -15,7 +15,19 @@ description: 获取并转换微信公众号/网页文章为 Markdown 的封装 S
 - 公众号订阅、同步与批量下载（`auth` / `subscribe` / `sync` / `download-account` / `sync-and-download`）
 - 多格式输出（Markdown 默认，支持 HTML / JSON / PDF / 全部）
 - 图片 OCR 合并（`--image-ocr` / `--mineru-url`）
-- 交互模式（不传 URL 时）
+- 显式交互模式（`--interactive`）
+
+## Default Workflow
+
+当 agent 使用这个 Skill 时，默认按下面顺序执行：
+
+1. 优先走非交互命令，直接传完整参数，不依赖提示输入
+2. 先使用最小功能集合，只输出 Markdown
+3. 只有确认环境存在时，才追加 `--pdf` 或 `--image-ocr`
+4. 批量任务先用 `--limit 1 --dry-run --output-json` 做 smoke test
+5. 在当前仓库内做验证时，测试产物统一写到 `.tmp/test-output/`
+
+如果用户没有明确要求交互模式，不要使用 `python3 scripts/wespy_cli.py --interactive`。
 
 ## 最小可用能力
 
@@ -31,6 +43,14 @@ description: 获取并转换微信公众号/网页文章为 Markdown 的封装 S
 - `--pdf` 依赖 `agent-browser`
 - `--image-ocr` 依赖 MinerU 服务
 - `subscribe` / `sync` / `download-account` 依赖公众号后台登录态
+
+## Failure Handling
+
+- 缺少 URL 时，直接报错并给出示例，不要进入交互模式
+- 缺少登录态时，先提示 `auth login` 或 `auth set --token --cookie`
+- 缺少 `agent-browser` 时，不要尝试 `--pdf`
+- 缺少 MinerU 服务时，不要尝试 `--image-ocr`
+- 如果需要机器可读结果，优先加 `--output-json`
 
 ## 依赖来源
 
@@ -48,6 +68,12 @@ python3 scripts/wespy_cli.py --help
 
 # 单篇文章（默认输出 markdown）
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx"
+
+# 单篇文章，输出结构化 JSON
+python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --output-json
+
+# 只预览执行计划
+python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --dry-run
 
 # 输出 markdown + html
 python3 scripts/wespy_cli.py "https://mp.weixin.qq.com/s/xxxxx" --html
@@ -85,6 +111,12 @@ python3 scripts/wespy_cli.py download-account "人民日报"
 
 # 批量下载该公众号文章，并同时导出 PDF
 python3 scripts/wespy_cli.py download-account "人民日报" --pdf
+
+# 批量任务先做 smoke test
+python3 scripts/wespy_cli.py download-account "人民日报" --limit 1 --dry-run --output-json
+
+# 显式进入交互模式
+python3 scripts/wespy_cli.py --interactive
 ```
 
 ## 参数
@@ -102,6 +134,9 @@ python3 scripts/wespy_cli.py download-account "人民日报" --pdf
 - `--pdf`
 - `--image-ocr`
 - `--mineru-url`
+- `--interactive`
+- `--dry-run`
+- `--output-json`
 - `--db-path`
 - `auth`
 - `subscribe`
@@ -116,11 +151,14 @@ python3 scripts/wespy_cli.py download-account "人民日报" --pdf
 - 若 Skill 嵌在 WeSpy 仓库内，自动使用当前仓库源码
 - 若本地不存在源码，则自动 clone `https://github.com/whynpc9/WeSpy.git`
 - 通过导入 `wespy.main.main` 直接调用 CLI，保持行为一致
+- CLI 默认非交互，只有显式传 `--interactive` 才进入提示输入
 - 订阅数据使用 SQLite，默认路径 `~/.wespy/wespy.db`
 - 公众号订阅功能支持 `auth login` 扫码登录，也支持手动提供公众号后台的 `token + cookie`
 - `--pdf` 依赖本机可用的 `agent-browser`，必要时可通过 `WESPY_AGENT_BROWSER_CMD` 覆盖命令
 - OCR 依赖本地可访问的 MinerU 服务，也可通过环境变量 `WESPY_MINERU_URL` 提供服务地址
 - 图片 OCR 结果会作为引用块追加到对应图片下方，避免打乱正文标题层级
+- `--dry-run` 可用于预览批量任务计划
+- `--output-json` 可用于把结果交给其他 agent 或脚本继续消费
 
 ## 可选依赖配置
 
