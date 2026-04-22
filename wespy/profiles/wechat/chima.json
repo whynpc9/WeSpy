@@ -1,0 +1,19 @@
+{
+  "name": "chima",
+  "version": "2026-04-22",
+  "source": "wechat",
+  "account_match": {
+    "nickname": ["CHIMA"],
+    "alias": ["chima1995"]
+  },
+  "root_selectors": ["#js_content"],
+  "remove_selectors": [".qr_code_container", ".related_articles", ".advertisement"],
+  "lead_trim_patterns": ["欢迎关注.*", "点击蓝字.*"],
+  "trailing_trim_patterns": ["免责声明", "联系人", "扫码.*进群", "推荐阅读"],
+  "preserve_selectors": ["table", "blockquote"],
+  "block_drop_patterns": ["商务合作", "转载联系", "广告"],
+  "ocr": {
+    "enabled": true,
+    "force_on_selectors": []
+  }
+}

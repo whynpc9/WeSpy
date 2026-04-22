@@ -1,0 +1,16 @@
+{
+  "name": "default",
+  "version": "2026-04-22",
+  "source": "wechat",
+  "account_match": {},
+  "root_selectors": ["#js_content"],
+  "remove_selectors": [],
+  "lead_trim_patterns": [],
+  "trailing_trim_patterns": [],
+  "preserve_selectors": [],
+  "block_drop_patterns": [],
+  "ocr": {
+    "enabled": true,
+    "force_on_selectors": []
+  }
+}
