@@ -13,6 +13,7 @@
 - 微信公众号专辑列表获取与批量下载
 - 公众号订阅、本地 SQLite 存储、文章列表同步
 - 批量下载公众号文章，默认 Markdown，可附带 HTML / JSON / PDF
+- 面向领域的每日简报生成（支持 Markdown / JSON 输出）
 - 图片 OCR 合并进 Markdown
 - 浏览器渲染 PDF 导出
 - `--dry-run` 计划预览
@@ -102,7 +103,18 @@ wespy-plus download-account "人民日报" --limit 1 --dry-run --output-json
 
 # 同步后立即下载新增文章
 wespy-plus sync-and-download "人民日报"
+
+# 归一化单个公众号正文，供后续简报使用
+wespy-plus normalize-account "人民日报" --limit 3
+
+# 生成领域每日简报
+wespy-plus brief generate --domain "医疗信息"
+
+# 生成指定日期简报，并输出 JSON
+wespy-plus brief generate --domain "医疗信息" --date 2026-04-21 --output-json
 ```
+
+> 建议链路：`subscribe -> sync -> normalize-account / normalize-domain -> brief generate`
 
 默认 SQLite 数据库位置：
 
@@ -150,6 +162,36 @@ wespy-plus "https://mp.weixin.qq.com/s/xxxxx" --image-ocr
 - 批量任务先执行 `--limit 1 --dry-run --output-json`
 - 只有确认环境存在时，才启用 `--pdf` 或 `--image-ocr`
 - 如果需要机器可读结果，优先使用 `--output-json`
+- 简报依赖已同步/已归一化到 SQLite 的文章元数据；如果希望摘要质量更高，先执行 `normalize-account` 或 `normalize-domain`
+
+## 每日简报说明
+
+`brief generate` 会读取指定领域、指定日期范围内已入库的文章，并输出：
+
+- 顶部总览（overview）
+- 栏目导读（section summary）
+- 文章摘要
+- why it matters / 关注点
+- Markdown 或 JSON 结果
+
+示例：
+
+```bash
+wespy-plus brief generate --domain "医疗信息"
+wespy-plus brief generate --domain "医疗信息" --date yesterday --output-json
+wespy-plus brief generate --domain "医疗信息" --date 2026-04-21 --limit 20
+```
+
+说明：
+
+- `--date` 支持 `yesterday` 或 `YYYY-MM-DD`
+- `--limit` 用于限制参与简报的候选文章数
+- 若当天内容较少，仍会输出结构化简报，但栏目/总览会相应收缩
+
+## Manual verification guides
+
+- [Phase 1 Manual Verification Guide](docs/manual-phase1-verification.md)
+- [Brief Manual Verification Guide](docs/manual-brief-verification.md)
 
 ## Skill
 

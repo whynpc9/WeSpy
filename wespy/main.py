@@ -15,7 +15,9 @@ from bs4 import BeautifulSoup, Comment
 import time
 import json
 import argparse
+from datetime import datetime, timedelta
 from contextlib import redirect_stdout
+from wespy.briefing import build_brief_payload, render_brief_markdown
 from wespy.juejin import JuejinFetcher
 from wespy.ocr import MinerUOCRClient
 from wespy.pdf_export import AgentBrowserPDFExporter
@@ -485,8 +487,12 @@ class ArticleFetcher:
         content_text = self._normalize_text(article_info.get('content_text') or '')
         has_content_container = bool(soup.find('div', {'id': 'js_content'}))
 
+        has_substantial_content = len(content_text) >= 80 or has_content_container
+
         for pattern in self.WECHAT_UNAVAILABLE_PATTERNS:
             if re.search(pattern, body_text, re.IGNORECASE):
+                if pattern in (r'轻触阅读原文', r'微信扫一扫可打开此内容', r'使用完整服务') and has_substantial_content:
+                    continue
                 return re.sub(r'\s+', ' ', pattern).strip('^$')
 
         looks_like_empty_shell = (
@@ -577,20 +583,22 @@ class ArticleFetcher:
 
         return info
 
-    def _clean_content_element(self, content_elem, source='general'):
+    def _clean_content_element(self, content_elem, source='general', profile=None):
         """清洗提取出的正文内容，尽量保留正文、删除噪音块。"""
         cleaned = BeautifulSoup(str(content_elem), 'html.parser')
         root = cleaned.find()
         if not root:
             return cleaned
 
+        self._last_normalization_notes = []
         self._remove_comments_and_hidden(root)
+        self._apply_profile_remove_selectors(root, profile)
 
         if source == 'wechat':
-            self._trim_wechat_lead(root)
-            self._trim_wechat_trailing_content(root)
+            self._trim_wechat_lead(root, profile=profile)
+            self._trim_wechat_trailing_content(root, profile=profile)
 
-        self._prune_low_value_blocks(root, source)
+        self._prune_low_value_blocks(root, source, profile=profile)
         self._remove_empty_elements(root)
         return root
 
@@ -612,7 +620,7 @@ class ArticleFetcher:
             if re.search(r'display\s*:\s*none', style) or re.search(r'visibility\s*:\s*hidden', style):
                 tag.decompose()
 
-    def _trim_wechat_lead(self, root):
+    def _trim_wechat_lead(self, root, profile=None):
         """移除公众号正文开头常见的引导关注块。"""
         blocks = self._get_text_blocks(root)
         first_substantive = None
@@ -624,23 +632,34 @@ class ArticleFetcher:
                 break
 
         if not first_substantive:
+            patterns = self._profile_patterns(profile, 'lead_trim_patterns', self.WECHAT_LEAD_PATTERNS)
+            for block in blocks:
+                text = self._normalize_text(block.get_text(' ', strip=True))
+                if text and not self._matches_patterns(text, patterns):
+                    first_substantive = block
+                    break
+        if not first_substantive:
             return
 
+        patterns = self._profile_patterns(profile, 'lead_trim_patterns', self.WECHAT_LEAD_PATTERNS)
         for block in blocks:
             if block == first_substantive:
                 break
             text = self._normalize_text(block.get_text(' ', strip=True))
-            if self._matches_patterns(text, self.WECHAT_LEAD_PATTERNS):
+            if self._matches_patterns(text, patterns):
                 self._remove_before_node(first_substantive, root)
+                self._append_normalization_note(f"lead_trim:{text[:40]}")
                 return
 
-    def _trim_wechat_trailing_content(self, root):
+    def _trim_wechat_trailing_content(self, root, profile=None):
         """命中公众号尾部标记后，截断后续所有内容。"""
         full_text = self._normalize_text(root.get_text('\n', strip=True))
         if not full_text:
             return
 
-        for block in self._get_text_blocks(root):
+        patterns = self._profile_patterns(profile, 'trailing_trim_patterns', self.WECHAT_TRAILING_PATTERNS)
+        blocks = self._get_text_blocks(root)
+        for index, block in enumerate(blocks):
             text = self._normalize_text(block.get_text(' ', strip=True))
             if not text:
                 continue
@@ -652,13 +671,27 @@ class ArticleFetcher:
             if ratio < 0.45:
                 continue
 
-            if self._matches_patterns(text, self.WECHAT_TRAILING_PATTERNS):
+            if self._matches_patterns(text, patterns):
+                remaining_blocks = blocks[index + 1:]
+                substantive_following_blocks = []
+                for item in remaining_blocks:
+                    remaining_text = self._normalize_text(item.get_text(' ', strip=True))
+                    if not remaining_text:
+                        continue
+                    if self._matches_patterns(remaining_text, patterns):
+                        continue
+                    if self._text_weight(remaining_text) >= 8:
+                        substantive_following_blocks.append(remaining_text)
+                if len(substantive_following_blocks) >= 2:
+                    continue
                 self._remove_after_node(block, root, remove_self=True)
+                self._append_normalization_note(f"trailing_trim:{text[:40]}")
                 return
 
-    def _prune_low_value_blocks(self, root, source='general'):
+    def _prune_low_value_blocks(self, root, source='general', profile=None):
         """删除低价值的结构块，借鉴通用正文清洗的打分思路。"""
         candidates = list(root.find_all(['section', 'div', 'aside']))
+        profile_drop_patterns = self._profile_patterns(profile, 'block_drop_patterns', [])
 
         for tag in candidates:
             if getattr(tag, 'name', None) is None or getattr(tag, 'attrs', None) is None:
@@ -668,6 +701,11 @@ class ArticleFetcher:
 
             text = self._normalize_text(tag.get_text(' ', strip=True))
             text_weight = self._text_weight(text)
+
+            if profile_drop_patterns and self._matches_patterns(text, profile_drop_patterns):
+                self._append_normalization_note(f"block_drop:{text[:40]}")
+                tag.decompose()
+                continue
 
             if text_weight == 0 and not tag.find(list(self.PRESERVED_CONTENT_TAGS)):
                 tag.decompose()
@@ -756,12 +794,51 @@ class ArticleFetcher:
         """压缩空白，便于匹配内容模式。"""
         return re.sub(r'\s+', ' ', text or '').strip()
 
+    def _profile_patterns(self, profile, key, fallback=None):
+        fallback = list(fallback or [])
+        if not profile:
+            return fallback
+        values = profile.get(key)
+        if values is None:
+            values = (profile.get('config') or {}).get(key)
+        return list(values or fallback)
+
+    def _normalize_text(self, text):
+        """压缩空白，便于匹配内容模式。"""
+        return re.sub(r'\s+', ' ', text or '').strip()
+
+    def _profile_patterns(self, profile, key, fallback=None):
+        fallback = list(fallback or [])
+        if not profile:
+            return fallback
+        values = profile.get(key)
+        if values is None:
+            values = (profile.get('config') or {}).get(key)
+        return list(values or fallback)
+
+    def _append_normalization_note(self, note):
+        if not note:
+            return
+        if not hasattr(self, '_last_normalization_notes'):
+            self._last_normalization_notes = []
+        self._last_normalization_notes.append(note)
+
+    def _apply_profile_remove_selectors(self, root, profile=None):
+        selectors = self._profile_patterns(profile, 'remove_selectors', [])
+        for selector in selectors:
+            matched = list(root.select(selector))
+            for tag in matched:
+                tag.decompose()
+            if matched:
+                self._append_normalization_note(f"remove_selectors:{selector} x{len(matched)}")
+
     def _matches_patterns(self, text, patterns):
         """检查文本是否命中任一清洗规则。"""
         return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
     def _remove_after_node(self, node, root, remove_self=False):
         """删除当前节点之后的所有内容，跨层级向上截断。"""
+
         current = node
         first_step = True
 
@@ -1556,6 +1633,14 @@ def _build_subscription_parser():
 
     subparsers = parser.add_subparsers(dest='command', required=True)
 
+    bootstrap_parser = _create_subparser(
+        subparsers,
+        'bootstrap',
+        '初始化默认领域与基础运行环境',
+        examples=['wespy-plus bootstrap', 'wespy-plus bootstrap --output-json'],
+    )
+    bootstrap_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
     auth_parser = _create_subparser(
         subparsers,
         'auth',
@@ -1612,6 +1697,25 @@ def _build_subscription_parser():
     )
     auth_clear.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
+    domain_parser = _create_subparser(
+        subparsers,
+        'domain',
+        '管理订阅领域',
+        examples=[
+            'wespy-plus domain create "医疗信息"',
+            'wespy-plus domain list',
+        ],
+    )
+    domain_subparsers = domain_parser.add_subparsers(dest='domain_command', required=True)
+
+    domain_create = _create_subparser(domain_subparsers, 'create', '创建领域')
+    domain_create.add_argument('name', help='领域名称')
+    domain_create.add_argument('--description', help='领域描述')
+    domain_create.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
+    domain_list = _create_subparser(domain_subparsers, 'list', '列出领域')
+    domain_list.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
     subscribe_parser = _create_subparser(
         subparsers,
         'subscribe',
@@ -1623,7 +1727,18 @@ def _build_subscription_parser():
         ],
     )
     subscribe_parser.add_argument('target', help='公众号名称关键词或公众号文章链接')
+    subscribe_parser.add_argument('--domain', help='订阅到指定领域')
     subscribe_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
+    unsubscribe_parser = _create_subparser(
+        subparsers,
+        'unsubscribe',
+        '从领域中取消订阅公众号',
+        examples=['wespy-plus unsubscribe "CHIMA" --domain "医疗信息"'],
+    )
+    unsubscribe_parser.add_argument('target', help='公众号名称、别名或 fakeid')
+    unsubscribe_parser.add_argument('--domain', required=True, help='领域名称')
+    unsubscribe_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
     subscriptions_parser = _create_subparser(
         subparsers,
@@ -1631,6 +1746,7 @@ def _build_subscription_parser():
         '列出已订阅公众号',
         examples=['wespy-plus subscriptions', 'wespy-plus subscriptions --output-json'],
     )
+    subscriptions_parser.add_argument('--domain', help='仅列出指定领域下启用的订阅')
     subscriptions_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
 
     sync_parser = _create_subparser(
@@ -1645,6 +1761,7 @@ def _build_subscription_parser():
     )
     sync_parser.add_argument('account', nargs='?', help='公众号名称、别名或 fakeid')
     sync_parser.add_argument('--all', action='store_true', help='同步全部已订阅公众号')
+    sync_parser.add_argument('--domain', help='当与 --all 搭配时，仅同步指定领域中的公众号')
     sync_parser.add_argument('--max-pages', type=int, help='限制单个公众号最多同步页数')
     sync_parser.add_argument('--dry-run', action='store_true', help='仅输出同步计划，不发起实际同步')
     sync_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
@@ -1697,6 +1814,77 @@ def _build_subscription_parser():
     sync_download_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR，并把结果合并进 Markdown')
     sync_download_parser.add_argument('--mineru-url', help='MinerU 服务地址')
 
+    brief_parser = _create_subparser(
+        subparsers,
+        'brief',
+        '生成领域每日简报（初版基于已同步文章元数据）',
+        examples=[
+            'wespy-plus brief generate --domain "医疗信息" --date yesterday',
+            'wespy-plus brief generate --domain "医疗信息" --date 2026-04-21 --output-json',
+        ],
+    )
+    brief_subparsers = brief_parser.add_subparsers(dest='brief_command', required=True)
+    brief_generate = _create_subparser(brief_subparsers, 'generate', '生成每日简报')
+    brief_generate.add_argument('--domain', required=True, help='领域名称')
+    brief_generate.add_argument('--date', default='yesterday', help='日期，YYYY-MM-DD 或 yesterday')
+    brief_generate.add_argument('--limit', type=int, help='限制纳入简报的候选文章数')
+    brief_generate.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
+    normalize_account_parser = _create_subparser(
+        subparsers,
+        'normalize-account',
+        '抓取并归一化单个公众号的正文内容',
+        examples=['wespy-plus normalize-account "CHIMA" --limit 3 --output-json'],
+    )
+    normalize_account_parser.add_argument('account', help='公众号名称、别名或 fakeid')
+    normalize_account_parser.add_argument('--limit', type=int, help='限制归一化文章数量')
+    normalize_account_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+    normalize_account_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
+    normalize_account_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
+    normalize_account_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
+    normalize_account_parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件')
+    normalize_account_parser.add_argument('--all-formats', action='store_true', help='保存所有格式文件')
+    normalize_account_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR')
+    normalize_account_parser.add_argument('--mineru-url', help='MinerU 服务地址')
+
+    normalize_domain_parser = _create_subparser(
+        subparsers,
+        'normalize-domain',
+        '抓取并归一化某个领域下订阅公众号的正文内容',
+        examples=['wespy-plus normalize-domain --domain "医疗信息" --limit 2 --output-json'],
+    )
+    normalize_domain_parser.add_argument('--domain', required=True, help='领域名称')
+    normalize_domain_parser.add_argument('--limit', type=int, help='限制每个公众号归一化文章数量')
+    normalize_domain_parser.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+    normalize_domain_parser.add_argument('-o', '--output', default='articles', help='输出目录 (默认: articles)')
+    normalize_domain_parser.add_argument('--html', action='store_true', help='同时保存HTML文件')
+    normalize_domain_parser.add_argument('--json', action='store_true', help='同时保存JSON信息文件')
+    normalize_domain_parser.add_argument('--pdf', action='store_true', help='同时保存PDF文件')
+    normalize_domain_parser.add_argument('--all-formats', action='store_true', help='保存所有格式文件')
+    normalize_domain_parser.add_argument('--image-ocr', action='store_true', help='对正文中的大图调用 MinerU OCR')
+    normalize_domain_parser.add_argument('--mineru-url', help='MinerU 服务地址')
+
+    profile_parser = _create_subparser(
+        subparsers,
+        'profile',
+        '管理正文抽取 profile',
+        examples=[
+            'wespy-plus profile list',
+            'wespy-plus profile show "CHIMA"',
+            'wespy-plus profile bind "CHIMA" --profile default',
+        ],
+    )
+    profile_subparsers = profile_parser.add_subparsers(dest='profile_command', required=True)
+    profile_list = _create_subparser(profile_subparsers, 'list', '列出可用 profile')
+    profile_list.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+    profile_show = _create_subparser(profile_subparsers, 'show', '查看账号当前解析到的 profile')
+    profile_show.add_argument('account', help='公众号名称、别名或 fakeid')
+    profile_show.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+    profile_bind = _create_subparser(profile_subparsers, 'bind', '为账号显式绑定 profile')
+    profile_bind.add_argument('account', help='公众号名称、别名或 fakeid')
+    profile_bind.add_argument('--profile', required=True, help='profile 名称')
+    profile_bind.add_argument('--output-json', action='store_true', help='以 JSON 输出结果')
+
     return parser
 
 
@@ -1711,13 +1899,32 @@ def _resolve_cookie_value(args):
 
 def _resolve_account_targets(service, args):
     if getattr(args, 'all', False) or getattr(args, 'all_accounts', False):
-        accounts = service.list_accounts()
+        accounts = service.list_accounts(domain=getattr(args, 'domain', None))
         if not accounts:
             raise RuntimeError("当前没有已订阅公众号。示例: wespy-plus subscribe \"人民日报\"")
         return [account['fakeid'] for account in accounts]
     if getattr(args, 'account', None):
         return [args.account]
     raise RuntimeError("请提供公众号名称/fakeid，或使用 --all/--all-accounts。示例: wespy-plus download-account \"人民日报\"")
+
+
+def _resolve_brief_range(date_value):
+    if date_value in (None, '', 'yesterday', '昨日'):
+        target = datetime.now() - timedelta(days=1)
+    else:
+        target = datetime.strptime(date_value, '%Y-%m-%d')
+    start = datetime(target.year, target.month, target.day)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _build_brief(service, domain, date_value='yesterday', limit=None):
+    start, end = _resolve_brief_range(date_value)
+    rows = service.store.list_domain_articles(domain, start_ts=int(start.timestamp()), end_ts=int(end.timestamp()), limit=limit)
+    domain_row = service.store.get_domain(domain)
+    payload = build_brief_payload(domain_row['name'], start.strftime('%Y-%m-%d'), rows)
+    payload['markdown'] = render_brief_markdown(payload)
+    return payload
 
 
 def _run_subscription_cli(argv):
@@ -1794,43 +2001,191 @@ def _run_subscription_cli(argv):
                 print("已清除公众号后台认证信息")
             return
 
+    if args.command == 'bootstrap':
+        domain = service.ensure_default_domain()
+        payload = {
+            'ok': True,
+            'command': 'bootstrap',
+            'db_path': store.db_path,
+            'default_domain': domain,
+            'domains': service.list_domains(),
+        }
+        if output_json:
+            _print_json(payload)
+        else:
+            print(f"默认领域已就绪: {domain['name']}")
+            print(f"数据库: {store.db_path}")
+        return
+
+    if args.command == 'domain':
+        if args.domain_command == 'create':
+            domain = service.create_domain(args.name, description=args.description)
+            payload = {'ok': True, 'command': 'domain.create', 'domain': domain}
+            if output_json:
+                _print_json(payload)
+            else:
+                print(f"已创建领域: {domain['name']}")
+            return
+        if args.domain_command == 'list':
+            domains = service.list_domains()
+            payload = {'ok': True, 'command': 'domain.list', 'domains': domains}
+            if output_json:
+                _print_json(payload)
+            else:
+                if not domains:
+                    print('当前没有领域')
+                for domain in domains:
+                    print(f"- {domain['name']} (启用订阅: {domain.get('active_subscription_count', 0)})")
+            return
+
     if args.command == 'subscribe':
         account, resolved_query = _maybe_run_quietly(
             output_json,
             args.verbose,
             service.subscribe,
             args.target,
+            domain=args.domain,
         )
         payload = {
             'ok': True,
             'command': 'subscribe',
             'account': account,
             'resolved_query': resolved_query,
+            'domain': args.domain,
         }
         if output_json:
             _print_json(payload)
         else:
             print(f"已订阅公众号: {account['nickname']}")
             print(f"fakeid: {account['fakeid']}")
+            if args.domain:
+                print(f"领域: {args.domain}")
             if resolved_query != args.target:
                 print(f"解析目标: {resolved_query}")
         return
 
+    if args.command == 'unsubscribe':
+        result = _maybe_run_quietly(
+            output_json,
+            args.verbose,
+            service.unsubscribe,
+            args.target,
+            args.domain,
+        )
+        payload = {'ok': True, 'command': 'unsubscribe', **result}
+        if output_json:
+            _print_json(payload)
+        else:
+            print(f"已从领域 {result['domain']['name']} 取消订阅: {result['account']['nickname']}")
+        return
+
     if args.command == 'subscriptions':
-        accounts = service.list_accounts()
+        accounts = service.list_accounts(domain=args.domain)
         if not accounts:
             if output_json:
-                _print_json({'ok': True, 'command': 'subscriptions', 'accounts': []})
+                _print_json({'ok': True, 'command': 'subscriptions', 'accounts': [], 'domain': args.domain})
             else:
                 print("当前没有已订阅公众号")
             return
         if output_json:
-            _print_json({'ok': True, 'command': 'subscriptions', 'accounts': accounts})
+            _print_json({'ok': True, 'command': 'subscriptions', 'accounts': accounts, 'domain': args.domain})
         else:
+            if args.domain:
+                print(f"领域: {args.domain}")
             for account in accounts:
                 print(f"- {account['nickname']} ({account['fakeid']})")
                 print(f"  已同步文章: {account.get('article_count', 0)}")
                 print(f"  待下载文章: {account.get('pending_count', 0) or 0}")
+        return
+
+    if args.command == 'brief':
+        if args.brief_command == 'generate':
+            payload = _build_brief(service, args.domain, date_value=args.date, limit=args.limit)
+            if output_json:
+                _print_json({'ok': True, 'command': 'brief.generate', **payload})
+            else:
+                print(payload['markdown'])
+            return
+
+    if args.command == 'profile':
+        if args.profile_command == 'list':
+            profiles = list(service.profile_resolver.list_profiles().values())
+            payload = {'ok': True, 'command': 'profile.list', 'profiles': profiles}
+            if output_json:
+                _print_json(payload)
+            else:
+                for profile in profiles:
+                    print(f"- {profile['name']} ({profile.get('version', '')})")
+            return
+        if args.profile_command == 'show':
+            account = service.store.get_account(args.account)
+            profile = service.resolve_extraction_profile(account)
+            payload = {'ok': True, 'command': 'profile.show', 'account': account, 'profile': profile}
+            if output_json:
+                _print_json(payload)
+            else:
+                print(f"公众号: {account['nickname']}")
+                print(f"profile: {profile['name']}")
+            return
+        if args.profile_command == 'bind':
+            account = service.bind_extraction_profile(args.account, args.profile)
+            profile = service.resolve_extraction_profile(account)
+            payload = {'ok': True, 'command': 'profile.bind', 'account': account, 'profile': profile}
+            if output_json:
+                _print_json(payload)
+            else:
+                print(f"已绑定 profile: {account['nickname']} -> {profile['name']}")
+            return
+
+    if args.command in ('normalize-account', 'normalize-domain'):
+        save_html, save_json, save_pdf, save_markdown = _apply_output_flags(args)
+        fetcher = _build_fetcher(
+            enable_image_ocr=getattr(args, 'image_ocr', False),
+            mineru_url=getattr(args, 'mineru_url', None),
+            verbose=args.verbose,
+        )
+        if args.command == 'normalize-account':
+            result = _maybe_run_quietly(
+                output_json,
+                args.verbose,
+                service.normalize_account,
+                args.account,
+                fetcher,
+                output_root=args.output,
+                limit=args.limit,
+                save_html=save_html,
+                save_json=save_json,
+                save_markdown=save_markdown,
+                save_pdf=save_pdf,
+            )
+            if output_json:
+                _print_json({'ok': True, 'command': 'normalize-account', 'result': result})
+            else:
+                print(f"归一化完成: {result['account']['nickname']} 成功 {result['success']} / 总计 {result['total']} / 不可用 {result['unavailable']} / 失败 {result['failed']}")
+            return
+        targets = [account['fakeid'] for account in service.list_accounts(domain=args.domain)]
+        results = []
+        for identifier in targets:
+            result = _maybe_run_quietly(
+                output_json,
+                args.verbose,
+                service.normalize_account,
+                identifier,
+                fetcher,
+                output_root=args.output,
+                limit=args.limit,
+                save_html=save_html,
+                save_json=save_json,
+                save_markdown=save_markdown,
+                save_pdf=save_pdf,
+            )
+            results.append(result)
+        if output_json:
+            _print_json({'ok': True, 'command': 'normalize-domain', 'domain': args.domain, 'results': results})
+        else:
+            print(f"领域归一化完成: {args.domain}")
+            for result in results:
+                print(f"- {result['account']['nickname']}: 成功 {result['success']} / 总计 {result['total']} / 不可用 {result['unavailable']} / 失败 {result['failed']}")
         return
 
     if args.command == 'sync':
@@ -1966,7 +2321,7 @@ def _run_subscription_cli(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    subcommands = {'auth', 'subscribe', 'subscriptions', 'sync', 'download-account', 'sync-and-download'}
+    subcommands = {'bootstrap', 'auth', 'domain', 'subscribe', 'unsubscribe', 'subscriptions', 'sync', 'download-account', 'sync-and-download', 'brief', 'normalize-account', 'normalize-domain', 'profile'}
     try:
         if any(arg in subcommands for arg in argv):
             _run_subscription_cli(argv)
